@@ -101,23 +101,6 @@ function notify(message) {
   d.showModal();
 }
 
-// ---------- landscape ----------
-// Fullscreen + orientation lock works in Chrome on Android; otherwise just rotate the phone.
-async function toggleLandscape() {
-  try {
-    if (document.fullscreenElement) { leaveLandscape(); return; }
-    await document.documentElement.requestFullscreen();
-    await screen.orientation.lock('landscape');
-  } catch {
-    notify('Could not lock the screen. Turn off rotation lock and rotate your phone sideways instead.');
-  }
-}
-
-function leaveLandscape() {
-  try { screen.orientation.unlock(); } catch {}
-  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-}
-
 // ---------- border list ----------
 function showList() {
   setNav('list');
@@ -169,8 +152,8 @@ function openEditor(borderId) {
   if (!border) return showList();
   setNav(null);
   setHeader(border.name, {
-    back: () => { leaveLandscape(); showList(); },
-    actions: [{ label: 'Landscape', onClick: toggleLandscape }, { label: '⋮', onClick: () => borderMenu(border) }],
+    back: showList,
+    actions: [{ label: '⋮', onClick: () => borderMenu(border) }],
   });
   main.innerHTML = `
     <div id="stage"><svg id="svg"></svg><div id="hint"></div></div>
@@ -618,10 +601,6 @@ function zoneDialog(border, zone, onClose, isNew) {
     </div>`;
   };
   const work = zone.plants.map(e => ({ ...e }));
-  const sources = data.borders.flatMap(b => b.zones.filter(z => z !== zone && z.plants.length).map(z => ({
-    zone: z,
-    label: `${b.name} – ${z.name || z.plants.map(e => rp(e).name).join(', ')} (${z.plants.length})`,
-  })));
   if (!work.length) work.push(newEntry());
 
   const readAll = d => [...d.querySelectorAll('.plant')].map(el => ({
@@ -642,20 +621,12 @@ function zoneDialog(border, zone, onClose, isNew) {
       <div class="muted" style="margin:10px 0 0">Plants in this zone</div>
       <div id="plants">${plants.map(plantHtml).join('')}</div>
       <button class="btn alt" id="z-add">+ Add plant</button>
-      ${sources.length ? `<label>Copy plants from another zone</label>
-      <div class="row"><select id="z-src" class="grow">${sources.map((s, i) => `<option value="${i}">${esc(s.label)}</option>`).join('')}</select>
-      <button class="btn alt" id="z-copy">Copy</button></div>` : ''}
       <div class="dlg-btns"><button class="btn danger" id="z-del">Delete zone</button><button class="btn alt" id="z-cancel">${isNew ? 'Skip' : 'Cancel'}</button><button class="btn" id="z-save">Save</button></div>`,
     d => {
       // keep the zone fields when the dialog is redrawn (add/copy/create plant)
       for (const [id, key] of [['#z-name', 'name'], ['#z-light', 'light'], ['#z-water', 'water']]) {
         d.querySelector(id).addEventListener('input', e => { meta[key] = e.target.value; });
       }
-      d.querySelector('#z-copy')?.addEventListener('click', () => {
-        const src = sources[+d.querySelector('#z-src').value];
-        const cur = readAll(d).filter(e => e.plantId);
-        draw([...cur, ...src.zone.plants.map(e => ({ ...e, id: uid() }))]);
-      });
       d.querySelector('#z-add').onclick = () => { const cur = readAll(d); cur.push(newEntry()); draw(cur); };
       d.querySelectorAll('.p-plant').forEach(sel => sel.onchange = () => {
         const cur = readAll(d);
