@@ -14,6 +14,33 @@ function save() {
   saveTimer = setTimeout(() => saveData(data).catch(e => alert('Saving failed: ' + e.message)), 200);
 }
 
+const byName = (a, b) => a.name.localeCompare(b.name);
+const FALLBACK_PLANT = { name: '(deleted plant)', color: '#9aa39a', bloomFrom: 0, bloomTo: 0, water: '', sun: '', notes: '' };
+// Combines a planting (zone entry) with its library plant data.
+const rp = e => ({ ...(data.plants.find(p => p.id === e.plantId) ?? FALLBACK_PLANT), ...e });
+
+// Upgrades data saved before the plant library existed: every distinct plant name becomes a library plant.
+function migrate(d) {
+  if (!Array.isArray(d.plants)) d.plants = [];
+  let changed = false;
+  for (const b of d.borders) {
+    for (const z of b.zones) {
+      z.plants = z.plants.map(e => {
+        if (e.plantId) return e;
+        changed = true;
+        let lib = d.plants.find(p => p.name.toLowerCase() === e.name.toLowerCase());
+        if (!lib) {
+          lib = { id: uid(), name: e.name, color: e.color || '#e8a2c1', bloomFrom: e.bloomFrom || 0, bloomTo: e.bloomTo || 0, water: e.water || '', sun: e.sun || '', notes: '' };
+          d.plants.push(lib);
+        }
+        return { id: e.id, plantId: lib.id, planted: e.planted || '', note: e.notes || '' };
+      });
+    }
+  }
+  d.version = 2;
+  return changed;
+}
+
 function setHeader(title, { back, actions = [] } = {}) {
   $('title').textContent = title;
   const b = $('back');
@@ -189,11 +216,11 @@ function openEditor(borderId) {
       s += `<polygon points="${poly(border.points)}" fill="#e3edd2" stroke="${bsel ? '#d6730a' : '#5b7a43'}" stroke-width="${px(bsel ? 3 : 2.5)}" stroke-linejoin="round"/>`;
     }
     for (const z of border.zones) {
-      const col = z.plants.find(p => p.color)?.color ?? '#9aa39a';
+      const col = z.plants.map(rp).find(p => p.color)?.color ?? '#9aa39a';
       const zsel = st.mode === 'edit' && st.sel.kind === 'zone' && st.sel.id === z.id;
       s += `<polygon points="${poly(z.points)}" fill="${col}" fill-opacity=".55" stroke="${zsel ? '#d6730a' : col}" stroke-width="${px(zsel ? 3 : 2)}" stroke-linejoin="round"/>`;
       const c = centroid(z.points);
-      const label = z.name || z.plants.map(p => p.name).join(', ');
+      const label = z.name || z.plants.map(e => rp(e).name).join(', ');
       if (label) s += `<text x="${c.x}" y="${c.y}" font-size="${px(13)}" text-anchor="middle" dominant-baseline="middle" fill="#1d2a1f" stroke="#fff" stroke-width="${px(3)}" paint-order="stroke">${esc(label)}</text>`;
     }
     // edge lengths of the border
@@ -546,37 +573,34 @@ function downscale(file, max) {
 
 // ---------- zone / plants popup ----------
 function zoneDialog(border, zone, onClose, isNew) {
-  const plantHtml = p => `
-    <div class="plant" data-id="${p.id}">
-      <label>Plant</label><input type="text" class="p-name" value="${esc(p.name)}" placeholder="e.g. Tulip ‘Queen of Night’">
-      <div class="row"><div class="grow"><label>Planted on</label><input type="date" class="p-date" value="${esc(p.planted)}"></div>
-      <div><label>Colour</label><input type="color" class="p-color" value="${esc(p.color || '#e8a2c1')}"></div></div>
-      <div class="row"><div class="grow"><label>Blooms from</label><select class="p-from">${monthOptions(p.bloomFrom)}</select></div>
-      <div class="grow"><label>until</label><select class="p-to">${monthOptions(p.bloomTo)}</select></div></div>
-      <div class="row"><div class="grow"><label>Water</label><select class="p-water">${opts(WATER, p.water)}</select></div>
-      <div class="grow"><label>Sun / shade</label><select class="p-sun">${opts(SUN, p.sun)}</select></div></div>
-      <label>Notes</label><textarea class="p-notes" rows="2">${esc(p.notes)}</textarea>
-      <div class="dlg-btns" style="margin-top:6px"><button class="btn danger p-del">Remove plant</button></div>
-    </div>`;
-  const monthOptions = sel => '<option value="0">—</option>' + MONTHS.map((m, i) => `<option value="${i + 1}"${sel === i + 1 ? ' selected' : ''}>${m}</option>`).join('');
   const today = new Date().toISOString().slice(0, 10);
-  const work = zone.plants.map(p => ({ ...p }));
+  const newEntry = () => ({ id: uid(), plantId: '', planted: today, note: '' });
+  const plantOptions = sel => '<option value="">Choose a plant…</option>' +
+    [...data.plants].sort(byName).map(p => `<option value="${p.id}"${p.id === sel ? ' selected' : ''}>${esc(p.name)}</option>`).join('') +
+    '<option value="__new__">＋ Create new plant…</option>';
+  const plantHtml = e => {
+    const p = data.plants.find(x => x.id === e.plantId);
+    return `
+    <div class="plant" data-id="${e.id}">
+      <label>Plant</label><select class="p-plant">${plantOptions(e.plantId)}</select>
+      ${p ? `<div class="muted" style="margin-top:4px"><span class="dot" style="background:${esc(p.color)}"></span>${esc(plantSummary(p))}</div>` : ''}
+      <label>Planted on</label><input type="date" class="p-date" value="${esc(e.planted)}">
+      <label>Note (optional)</label><input type="text" class="p-note" value="${esc(e.note)}" placeholder="e.g. 20 bulbs">
+      <div class="dlg-btns" style="margin-top:6px">${p ? '<button class="btn alt p-edit">Edit plant</button>' : ''}<button class="btn danger p-del">Remove</button></div>
+    </div>`;
+  };
+  const work = zone.plants.map(e => ({ ...e }));
   const sources = data.borders.flatMap(b => b.zones.filter(z => z !== zone && z.plants.length).map(z => ({
     zone: z,
-    label: `${b.name} – ${z.name || z.plants.map(p => p.name).join(', ')} (${z.plants.length})`,
+    label: `${b.name} – ${z.name || z.plants.map(e => rp(e).name).join(', ')} (${z.plants.length})`,
   })));
-  if (!work.length) work.push(newPlant(today));
+  if (!work.length) work.push(newEntry());
 
   const readAll = d => [...d.querySelectorAll('.plant')].map(el => ({
     id: el.dataset.id,
-    name: el.querySelector('.p-name').value.trim(),
+    plantId: el.querySelector('.p-plant').value === '__new__' ? '' : el.querySelector('.p-plant').value,
     planted: el.querySelector('.p-date').value,
-    color: el.querySelector('.p-color').value,
-    bloomFrom: +el.querySelector('.p-from').value,
-    bloomTo: +el.querySelector('.p-to').value,
-    water: el.querySelector('.p-water').value,
-    sun: el.querySelector('.p-sun').value,
-    notes: el.querySelector('.p-notes').value.trim(),
+    note: el.querySelector('.p-note').value.trim(),
   }));
 
   function draw(plants) {
@@ -592,13 +616,24 @@ function zoneDialog(border, zone, onClose, isNew) {
     d => {
       d.querySelector('#z-copy')?.addEventListener('click', () => {
         const src = sources[+d.querySelector('#z-src').value];
-        const cur = readAll(d).filter(p => p.name);
-        draw([...cur, ...src.zone.plants.map(p => ({ ...p, id: uid() }))]);
+        const cur = readAll(d).filter(e => e.plantId);
+        draw([...cur, ...src.zone.plants.map(e => ({ ...e, id: uid() }))]);
       });
-      d.querySelector('#z-add').onclick = () => { const cur = readAll(d); cur.push(newPlant(today)); draw(cur); };
+      d.querySelector('#z-add').onclick = () => { const cur = readAll(d); cur.push(newEntry()); draw(cur); };
+      d.querySelectorAll('.p-plant').forEach(sel => sel.onchange = () => {
+        const cur = readAll(d);
+        if (sel.value !== '__new__') return draw(cur);
+        const id = sel.closest('.plant').dataset.id;
+        plantDialog(null, np => { cur.find(e => e.id === id).plantId = np.id; draw(cur); }, () => draw(cur));
+      });
+      d.querySelectorAll('.p-edit').forEach(bt => bt.onclick = () => {
+        const cur = readAll(d);
+        const entry = cur.find(e => e.id === bt.closest('.plant').dataset.id);
+        plantDialog(data.plants.find(p => p.id === entry.plantId), () => draw(cur), () => draw(cur));
+      });
       d.querySelectorAll('.p-del').forEach(bt => bt.onclick = () => {
         const id = bt.closest('.plant').dataset.id;
-        draw(readAll(d).filter(p => p.id !== id));
+        draw(readAll(d).filter(e => e.id !== id));
       });
       d.querySelector('#z-cancel').onclick = () => { closeDialog(); onClose?.(); };
       d.querySelector('#z-del').onclick = () => {
@@ -606,7 +641,7 @@ function zoneDialog(border, zone, onClose, isNew) {
       };
       d.querySelector('#z-save').onclick = () => {
         zone.name = d.querySelector('#z-name').value.trim();
-        zone.plants = readAll(d).filter(p => p.name);
+        zone.plants = readAll(d).filter(e => e.plantId);
         save(); closeDialog(); onClose?.();
       };
     });
@@ -614,7 +649,55 @@ function zoneDialog(border, zone, onClose, isNew) {
   draw(work);
 }
 
-const newPlant = planted => ({ id: uid(), name: '', planted, color: '#e8a2c1', bloomFrom: 0, bloomTo: 0, water: '', sun: '', notes: '' });
+const monthOptions = sel => '<option value="0">—</option>' + MONTHS.map((m, i) => `<option value="${i + 1}"${sel === i + 1 ? ' selected' : ''}>${m}</option>`).join('');
+
+function plantSummary(p) {
+  return [
+    p.bloomFrom && p.bloomTo ? `blooms ${MONTHS[p.bloomFrom - 1]}–${MONTHS[p.bloomTo - 1]}` : '',
+    p.water && 'water: ' + label(WATER, p.water),
+    p.sun && label(SUN, p.sun),
+  ].filter(Boolean).join(' · ') || 'No details yet';
+}
+
+// Create (plant = null) or edit a library plant. Calls onDone(plant) after saving; closes itself first.
+function plantDialog(plant, onDone, onCancel, canDelete = false) {
+  const p = plant ?? { id: uid(), name: '', color: '#e8a2c1', bloomFrom: 0, bloomTo: 0, water: '', sun: '', notes: '' };
+  openDialog(`<h2>${plant ? 'Edit plant' : 'New plant'}</h2>
+    ${plant ? '<p class="muted">Changes apply to every zone that uses this plant.</p>' : ''}
+    <label>Name</label><input type="text" id="pl-name" value="${esc(p.name)}" placeholder="e.g. Tulip ‘Queen of Night’">
+    <div class="row"><div class="grow"><label>Blooms from</label><select id="pl-from">${monthOptions(p.bloomFrom)}</select></div>
+    <div class="grow"><label>until</label><select id="pl-to">${monthOptions(p.bloomTo)}</select></div>
+    <div><label>Colour</label><input type="color" id="pl-color" value="${esc(p.color)}"></div></div>
+    <div class="row"><div class="grow"><label>Water</label><select id="pl-water">${opts(WATER, p.water)}</select></div>
+    <div class="grow"><label>Sun / shade</label><select id="pl-sun">${opts(SUN, p.sun)}</select></div></div>
+    <label>Notes</label><textarea id="pl-notes" rows="2">${esc(p.notes)}</textarea>
+    <div class="dlg-btns">${plant && canDelete ? '<button class="btn danger" id="pl-del">Delete</button>' : ''}<button class="btn alt" id="pl-cancel">Cancel</button><button class="btn" id="pl-save">Save</button></div>`,
+  d => {
+    d.querySelector('#pl-cancel').onclick = () => { closeDialog(); onCancel?.(); };
+    d.querySelector('#pl-del')?.addEventListener('click', () => {
+      const uses = data.borders.flatMap(b => b.zones).filter(z => z.plants.some(e => e.plantId === p.id)).length;
+      if (!confirm(uses ? `“${p.name}” is planted in ${uses} zone(s). Delete it from the library and from those zones?` : `Delete “${p.name}”?`)) return;
+      data.plants = data.plants.filter(x => x.id !== p.id);
+      data.borders.forEach(b => b.zones.forEach(z => { z.plants = z.plants.filter(e => e.plantId !== p.id); }));
+      save(); closeDialog(); onDone(null);
+    });
+    d.querySelector('#pl-save').onclick = () => {
+      const name = d.querySelector('#pl-name').value.trim();
+      if (!name) { alert('Please enter a name.'); return; }
+      Object.assign(p, {
+        name,
+        color: d.querySelector('#pl-color').value,
+        bloomFrom: +d.querySelector('#pl-from').value,
+        bloomTo: +d.querySelector('#pl-to').value,
+        water: d.querySelector('#pl-water').value,
+        sun: d.querySelector('#pl-sun').value,
+        notes: d.querySelector('#pl-notes').value.trim(),
+      });
+      if (!plant) data.plants.push(p);
+      save(); closeDialog(); onDone(p);
+    };
+  });
+}
 
 const WATER = [['', '—'], ['low', 'Low (dry)'], ['medium', 'Medium'], ['high', 'High (moist)']];
 const SUN = [['', '—'], ['sun', 'Full sun'], ['partial', 'Partial shade'], ['shade', 'Full shade']];
@@ -628,7 +711,7 @@ function blooms(p, month) {
 }
 
 function calendarDialog(borders) {
-  const plants = borders.flatMap(b => b.zones.flatMap(z => z.plants));
+  const plants = [...new Map(borders.flatMap(b => b.zones.flatMap(z => z.plants.map(rp))).map(p => [p.plantId, p])).values()];
   const cells = MONTHS.map((m, i) => {
     const list = plants.filter(p => blooms(p, i + 1));
     const dots = [...new Set(list.map(p => p.color))].map(c => `<span class="dot" style="background:${esc(c)}"></span>`).join('');
@@ -645,21 +728,24 @@ function calendarDialog(borders) {
 // ---------- plants overview ----------
 function showPlants() {
   setNav('plants');
-  setHeader('All plants', { actions: [{ label: '🗓', onClick: () => calendarDialog(data.borders) }] });
-  const all = data.borders.flatMap(b => b.zones.flatMap(z => z.plants.map(p => ({ ...p, border: b, zone: z }))));
+  setHeader('Plants', { actions: [
+    { label: 'Colours', onClick: () => calendarDialog(data.borders) },
+    { label: '+ Add', onClick: () => plantDialog(null, showPlants) },
+  ] });
   main.innerHTML = '<div class="pad"><input type="text" id="q" placeholder="Search plants…"><div id="res" style="margin-top:10px"></div></div>';
   const draw = () => {
     const q = $('q').value.trim().toLowerCase();
-    const rows = all.filter(p => !q || p.name.toLowerCase().includes(q) || p.border.name.toLowerCase().includes(q))
-      .sort((a, b) => (b.planted || '').localeCompare(a.planted || ''));
-    $('res').innerHTML = rows.length ? '' : '<p class="muted">No plants found.</p>';
+    const rows = data.plants.filter(p => !q || p.name.toLowerCase().includes(q)).sort(byName);
+    $('res').innerHTML = rows.length ? '' : `<p class="muted">${data.plants.length ? 'No plants found.' : 'No plants yet. Tap “+ Add” to add your first plant.'}</p>`;
     for (const p of rows) {
+      const places = data.borders.flatMap(b => b.zones.flatMap(z => z.plants.filter(e => e.plantId === p.id)
+        .map(e => `${b.name} – ${z.name || 'Unnamed zone'}${e.planted ? ' (planted ' + e.planted + ')' : ''}`)));
       const c = document.createElement('div');
       c.className = 'card click';
-      const bloom = p.bloomFrom && p.bloomTo ? ` · blooms ${MONTHS[p.bloomFrom - 1]}–${MONTHS[p.bloomTo - 1]}` : '';
-      const needs = [p.water && 'water: ' + label(WATER, p.water), p.sun && label(SUN, p.sun)].filter(Boolean).join(' · ');
-      c.innerHTML = `<span class="dot" style="background:${esc(p.color)}"></span><b>${esc(p.name)}</b><div class="muted">${esc(p.border.name)}${p.planted ? ' · planted ' + esc(p.planted) : ''}${bloom}</div>${needs ? `<div class="muted">${esc(needs)}</div>` : ''}`;
-      c.onclick = () => zoneDialog(p.border, p.zone, showPlants, false);
+      c.innerHTML = `<span class="dot" style="background:${esc(p.color)}"></span><b>${esc(p.name)}</b>
+        <div class="muted">${esc(plantSummary(p))}</div>
+        <div class="muted" style="margin-top:4px">${places.length ? 'Planted in:<br>' + places.map(esc).join('<br>') : 'Not planted yet'}</div>`;
+      c.onclick = () => plantDialog(p, showPlants, null, true);
       $('res').append(c);
     }
   };
@@ -689,6 +775,7 @@ function showSettings() {
       const imported = JSON.parse(await f.text());
       if (!Array.isArray(imported.borders)) throw new Error('Not a Border Planner backup');
       if (!confirm('Replace all current data with this backup?')) return;
+      migrate(imported);
       data = imported; save(); showList();
     } catch (err) { alert('Import failed: ' + err.message); }
   };
@@ -697,6 +784,7 @@ function showSettings() {
 // ---------- start ----------
 (async () => {
   data = await loadData();
+  if (migrate(data)) save();
   showList();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();

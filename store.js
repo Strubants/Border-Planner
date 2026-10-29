@@ -1,7 +1,8 @@
 // Persistence in IndexedDB (handles photos, unlike localStorage).
 // Data model (JSON, kept platform-neutral so a native app can reuse it):
-// { version, borders: [{ id, name, photo, points:[{x,y}], zones:[{ id, name, points, plants:[
-//   { id, name, planted:'YYYY-MM-DD', color:'#rrggbb', bloomFrom:1-12|0, bloomTo:1-12|0, notes }] }] }] }
+// { version, plants:[{ id, name, color:'#rrggbb', bloomFrom:1-12|0, bloomTo:1-12|0, water, sun, notes }],
+//   borders: [{ id, name, photo, points:[{x,y}], zones:[{ id, name, points, plants:[
+//   { id, plantId (-> plants[].id), planted:'YYYY-MM-DD', note }] }] }] }
 
 const DB_NAME = 'borderplanner';
 const STORE = 'kv';
@@ -16,7 +17,7 @@ function openDb() {
   });
 }
 
-export const emptyData = () => ({ version: 1, borders: [] });
+export const emptyData = () => ({ version: 2, plants: [], borders: [] });
 
 export async function loadData() {
   const db = await openDb();
