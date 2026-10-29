@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2f6b3a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+  <title>Border Planner</title>
+</head>
+<body>
+  <header>
+    <button id="back" hidden aria-label="Back">←</button>
+    <h1 id="title">Border Planner</h1>
+    <div id="actions"></div>
+  </header>
+  <main id="main"></main>
+  <nav id="nav">
+    <button data-nav="list">Borders</button>
+    <button data-nav="plants">Plants</button>
+    <button data-nav="settings">Backup</button>
+  </nav>
+  <dialog id="dlg"></dialog>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

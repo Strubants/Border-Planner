@@ -1,0 +1,12 @@
+{
+  "name": "Border Planner",
+  "short_name": "Borders",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fafcf7",
+  "theme_color": "#2f6b3a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
