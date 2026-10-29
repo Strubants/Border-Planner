@@ -11,7 +11,7 @@ let data;
 let saveTimer;
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => saveData(data).catch(e => alert('Saving failed: ' + e.message)), 200);
+  saveTimer = setTimeout(() => saveData(data).catch(e => notify('Saving failed: ' + e.message)), 200);
 }
 
 const byName = (a, b) => a.name.localeCompare(b.name);
@@ -73,6 +73,34 @@ function openDialog(html, onMount) {
 }
 const closeDialog = () => dlg.open && dlg.close();
 
+// In-app replacements for confirm()/alert(), which are blocked or unreliable in some browsers.
+function ask(message, okLabel = 'Delete', danger = true) {
+  return new Promise(resolve => {
+    const d = document.createElement('dialog');
+    d.innerHTML = `<p style="margin-top:0">${esc(message)}</p>
+      <div class="dlg-btns"><button class="btn alt" data-r="0">Cancel</button><button class="btn${danger ? ' danger' : ''}" data-r="1">${esc(okLabel)}</button></div>`;
+    d.onclose = () => d.remove();
+    d.addEventListener('click', e => {
+      const r = e.target.dataset?.r;
+      if (r === undefined) return;
+      resolve(r === '1');
+      d.close();
+    });
+    d.addEventListener('cancel', () => resolve(false));
+    document.body.append(d);
+    d.showModal();
+  });
+}
+
+function notify(message) {
+  const d = document.createElement('dialog');
+  d.innerHTML = `<p style="margin-top:0">${esc(message)}</p><div class="dlg-btns"><button class="btn">OK</button></div>`;
+  d.onclose = () => d.remove();
+  d.querySelector('button').onclick = () => d.close();
+  document.body.append(d);
+  d.showModal();
+}
+
 // ---------- landscape ----------
 // Fullscreen + orientation lock works in Chrome on Android; otherwise just rotate the phone.
 async function toggleLandscape() {
@@ -81,7 +109,7 @@ async function toggleLandscape() {
     await document.documentElement.requestFullscreen();
     await screen.orientation.lock('landscape');
   } catch {
-    alert('Could not lock the screen. Turn off rotation lock and rotate your phone sideways instead.');
+    notify('Could not lock the screen. Turn off rotation lock and rotate your phone sideways instead.');
   }
 }
 
@@ -283,10 +311,10 @@ function openEditor(borderId) {
       );
       if (isZone) {
         actions.push(
-          btn('Plants', false, () => zoneDialog(border, selZone(), update, false)),
+          btn('Zone details', false, () => zoneDialog(border, selZone(), update, false)),
           btn(st.snap ? 'Snap: on' : 'Snap: off', st.snap, toggleSnap),
-          btn('Delete zone', false, () => {
-            if (confirm('Delete this zone and its plants?')) {
+          btn('Delete zone', false, async () => {
+            if (await ask('Delete this zone and its plants?')) {
               border.zones = border.zones.filter(z => z.id !== st.sel.id);
               st.sel = { kind: 'border' }; save(); update();
             }
@@ -337,8 +365,8 @@ function openEditor(borderId) {
       st.draft = [];
       save(); fit(); update();
     } else {
-      if (!zoneFits(st.draft, null)) { alert('This zone overlaps another zone or leaves the border. Adjust the points, or turn Snap off.'); return; }
-      const zone = { id: uid(), name: '', points: st.draft, plants: [] };
+      if (!zoneFits(st.draft, null)) { notify('This zone overlaps another zone or leaves the border. Adjust the points, or turn Snap off.'); return; }
+      const zone = { id: uid(), name: '', light: '', water: '', points: st.draft, plants: [] };
       border.zones.push(zone);
       st.draft = []; st.mode = 'view'; save(); update();
       zoneDialog(border, zone, update, true);
@@ -455,7 +483,7 @@ function openEditor(borderId) {
       const zone = selZone();
       if (zone && !zoneFits(zone.points, zone.id)) {
         zone.points = done.backup;
-        alert('A zone cannot overlap another zone or leave the border (turn Snap off to allow it).');
+        notify('A zone cannot overlap another zone or leave the border (turn Snap off to allow it).');
       }
       save(); update(); return;
     }
@@ -528,8 +556,8 @@ function borderMenu(border) {
     };
     d.querySelector('#m-photo').onclick = () => photoDialog(border);
     d.querySelector('#m-cal').onclick = () => calendarDialog([border]);
-    d.querySelector('#m-del').onclick = () => {
-      if (confirm(`Delete “${border.name}” and everything in it?`)) {
+    d.querySelector('#m-del').onclick = async () => {
+      if (await ask(`Delete “${border.name}” and everything in it?`)) {
         data.borders = data.borders.filter(b => b !== border);
         save(); closeDialog(); showList();
       }
@@ -607,6 +635,9 @@ function zoneDialog(border, zone, onClose, isNew) {
     openDialog(`<h2>${isNew ? 'New zone' : 'Zone'}</h2>
       <div class="muted">${m2(polygonArea(zone.points) / 100)} m²</div>
       <label>Zone name (optional)</label><input type="text" id="z-name" value="${esc(zone.name)}">
+      <div class="row"><div class="grow"><label>Light level</label><select id="z-light">${opts(SUN, zone.light)}</select></div>
+      <div class="grow"><label>Water</label><select id="z-water">${opts(ZONE_WATER, zone.water)}</select></div></div>
+      <div class="muted" style="margin:10px 0 0">Plants in this zone</div>
       <div id="plants">${plants.map(plantHtml).join('')}</div>
       <button class="btn alt" id="z-add">+ Add plant</button>
       ${sources.length ? `<label>Copy plants from another zone</label>
@@ -636,11 +667,13 @@ function zoneDialog(border, zone, onClose, isNew) {
         draw(readAll(d).filter(e => e.id !== id));
       });
       d.querySelector('#z-cancel').onclick = () => { closeDialog(); onClose?.(); };
-      d.querySelector('#z-del').onclick = () => {
-        if (confirm('Delete this zone?')) { border.zones = border.zones.filter(z => z !== zone); save(); closeDialog(); onClose?.(); }
+      d.querySelector('#z-del').onclick = async () => {
+        if (await ask('Delete this zone?')) { border.zones = border.zones.filter(z => z !== zone); save(); closeDialog(); onClose?.(); }
       };
       d.querySelector('#z-save').onclick = () => {
         zone.name = d.querySelector('#z-name').value.trim();
+        zone.light = d.querySelector('#z-light').value;
+        zone.water = d.querySelector('#z-water').value;
         zone.plants = readAll(d).filter(e => e.plantId);
         save(); closeDialog(); onClose?.();
       };
@@ -674,16 +707,16 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
     <div class="dlg-btns">${plant && canDelete ? '<button class="btn danger" id="pl-del">Delete</button>' : ''}<button class="btn alt" id="pl-cancel">Cancel</button><button class="btn" id="pl-save">Save</button></div>`,
   d => {
     d.querySelector('#pl-cancel').onclick = () => { closeDialog(); onCancel?.(); };
-    d.querySelector('#pl-del')?.addEventListener('click', () => {
+    d.querySelector('#pl-del')?.addEventListener('click', async () => {
       const uses = data.borders.flatMap(b => b.zones).filter(z => z.plants.some(e => e.plantId === p.id)).length;
-      if (!confirm(uses ? `“${p.name}” is planted in ${uses} zone(s). Delete it from the library and from those zones?` : `Delete “${p.name}”?`)) return;
+      if (!await ask(uses ? `“${p.name}” is planted in ${uses} zone(s). Delete it from the library and from those zones?` : `Delete “${p.name}”?`)) return;
       data.plants = data.plants.filter(x => x.id !== p.id);
       data.borders.forEach(b => b.zones.forEach(z => { z.plants = z.plants.filter(e => e.plantId !== p.id); }));
       save(); closeDialog(); onDone(null);
     });
     d.querySelector('#pl-save').onclick = () => {
       const name = d.querySelector('#pl-name').value.trim();
-      if (!name) { alert('Please enter a name.'); return; }
+      if (!name) { notify('Please enter a name.'); return; }
       Object.assign(p, {
         name,
         color: d.querySelector('#pl-color').value,
@@ -700,6 +733,7 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
 }
 
 const WATER = [['', '—'], ['low', 'Low (dry)'], ['medium', 'Medium'], ['high', 'High (moist)']];
+const ZONE_WATER = [['', '—'], ['few', 'Few'], ['normal', 'Normal'], ['lots', 'Lots']];
 const SUN = [['', '—'], ['sun', 'Full sun'], ['partial', 'Partial shade'], ['shade', 'Full shade']];
 const opts = (list, sel) => list.map(([v, l]) => `<option value="${v}"${(sel || '') === v ? ' selected' : ''}>${l}</option>`).join('');
 const label = (list, v) => list.find(([k]) => k === v)?.[1];
@@ -774,10 +808,10 @@ function showSettings() {
     try {
       const imported = JSON.parse(await f.text());
       if (!Array.isArray(imported.borders)) throw new Error('Not a Border Planner backup');
-      if (!confirm('Replace all current data with this backup?')) return;
+      if (!await ask('Replace all current data with this backup?', 'Replace')) return;
       migrate(imported);
       data = imported; save(); showList();
-    } catch (err) { alert('Import failed: ' + err.message); }
+    } catch (err) { notify('Import failed: ' + err.message); }
   };
 }
 
