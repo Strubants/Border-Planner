@@ -631,12 +631,14 @@ function zoneDialog(border, zone, onClose, isNew) {
     note: el.querySelector('.p-note').value.trim(),
   }));
 
+  const meta = { name: zone.name, light: zone.light, water: zone.water };
+
   function draw(plants) {
     openDialog(`<h2>${isNew ? 'New zone' : 'Zone'}</h2>
       <div class="muted">${m2(polygonArea(zone.points) / 100)} m²</div>
-      <label>Zone name (optional)</label><input type="text" id="z-name" value="${esc(zone.name)}">
-      <div class="row"><div class="grow"><label>Light level</label><select id="z-light">${opts(SUN, zone.light)}</select></div>
-      <div class="grow"><label>Water</label><select id="z-water">${opts(ZONE_WATER, zone.water)}</select></div></div>
+      <label>Zone name (optional)</label><input type="text" id="z-name" value="${esc(meta.name)}">
+      <div class="row"><div class="grow"><label>Light level</label><select id="z-light">${opts(SUN, meta.light)}</select></div>
+      <div class="grow"><label>Water</label><select id="z-water">${opts(ZONE_WATER, meta.water)}</select></div></div>
       <div class="muted" style="margin:10px 0 0">Plants in this zone</div>
       <div id="plants">${plants.map(plantHtml).join('')}</div>
       <button class="btn alt" id="z-add">+ Add plant</button>
@@ -645,6 +647,10 @@ function zoneDialog(border, zone, onClose, isNew) {
       <button class="btn alt" id="z-copy">Copy</button></div>` : ''}
       <div class="dlg-btns"><button class="btn danger" id="z-del">Delete zone</button><button class="btn alt" id="z-cancel">${isNew ? 'Skip' : 'Cancel'}</button><button class="btn" id="z-save">Save</button></div>`,
     d => {
+      // keep the zone fields when the dialog is redrawn (add/copy/create plant)
+      for (const [id, key] of [['#z-name', 'name'], ['#z-light', 'light'], ['#z-water', 'water']]) {
+        d.querySelector(id).addEventListener('input', e => { meta[key] = e.target.value; });
+      }
       d.querySelector('#z-copy')?.addEventListener('click', () => {
         const src = sources[+d.querySelector('#z-src').value];
         const cur = readAll(d).filter(e => e.plantId);
