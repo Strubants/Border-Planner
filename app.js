@@ -1,4 +1,4 @@
-import { dist, polygonArea, centroid, pointInPolygon, bbox, setEdgeLength, rectangle, closestOnPolygon, distToPolygon, polygonsOverlap, insideOrOn } from './geometry.js';
+import { dist, polygonArea, centroid, pointInPolygon, bbox, setEdgeLength, rectangle, ellipse, triangle, closestOnPolygon, distToPolygon, polygonsOverlap, insideOrOn } from './geometry.js';
 import { loadData, saveData, uid } from './store.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -125,18 +125,42 @@ function newBorderDialog() {
   openDialog(`
     <h2>New border</h2>
     <label>Name</label><input type="text" id="nb-name" placeholder="e.g. Front border">
-    <p class="muted">Optional: start from a rectangle (metres). Leave empty to draw the outline by tapping its corners.</p>
-    <div class="row"><div class="grow"><label>Width (m)</label><input type="number" id="nb-w" step="0.01" min="0"></div>
-    <div class="grow"><label>Length (m)</label><input type="number" id="nb-h" step="0.01" min="0"></div></div>
+    <label>Starting shape</label>
+    <select id="nb-shape">
+      <option value="rect">Rectangle</option><option value="circle">Circle</option>
+      <option value="oval">Oval</option><option value="triangle">Triangle</option>
+      <option value="free">Draw freehand</option>
+    </select>
+    <p class="muted" id="nb-info"></p>
+    <div class="row" id="nb-dims"><div class="grow"><label id="nb-wl"></label><input type="number" id="nb-w" step="0.01" min="0"></div>
+    <div class="grow" id="nb-hbox"><label id="nb-hl"></label><input type="number" id="nb-h" step="0.01" min="0"></div></div>
     <div class="dlg-btns"><button class="btn alt" id="nb-cancel">Cancel</button><button class="btn" id="nb-ok">Create</button></div>`,
   d => {
+    const labels = {
+      rect: ['Width (m)', 'Length (m)'], circle: ['Diameter (m)'], oval: ['Width (m)', 'Length (m)'],
+      triangle: ['Base (m)', 'Height (m)'], free: [],
+    };
+    const shape = d.querySelector('#nb-shape');
+    const sync = () => {
+      const l = labels[shape.value];
+      d.querySelector('#nb-dims').hidden = !l.length;
+      d.querySelector('#nb-hbox').hidden = l.length < 2;
+      d.querySelector('#nb-wl').textContent = l[0] ?? '';
+      d.querySelector('#nb-hl').textContent = l[1] ?? '';
+      d.querySelector('#nb-info').textContent = shape.value === 'free'
+        ? 'Tap the corners of the border on the map.'
+        : 'Enter the outer measurements. The outer points are locked; reshape the border with the points in between (or add new ones).';
+    };
+    shape.onchange = sync; sync();
     d.querySelector('#nb-cancel').onclick = closeDialog;
     d.querySelector('#nb-ok').onclick = () => {
       const w = parseFloat(d.querySelector('#nb-w').value) * 100;
-      const h = parseFloat(d.querySelector('#nb-h').value) * 100;
+      const h = shape.value === 'circle' ? w : parseFloat(d.querySelector('#nb-h').value) * 100;
+      const make = { rect: rectangle, circle: ellipse, oval: ellipse, triangle: triangle }[shape.value];
+      if (make && !(w > 0 && h > 0)) { notify('Please enter the dimensions.'); return; }
       const border = {
         id: uid(), name: d.querySelector('#nb-name').value.trim() || 'Border', photo: null,
-        points: w > 0 && h > 0 ? rectangle(w, h) : [], zones: [],
+        points: make ? make(w, h) : [], zones: [],
       };
       data.borders.push(border);
       save();
@@ -240,6 +264,7 @@ function openEditor(borderId) {
       for (let i = 0; i < bp.length; i++) {
         const a = bp[i], b = bp[(i + 1) % bp.length];
         if (bp.length === 2 && i === 1) break;
+        if (dist(a, b) / kk < 40) continue;
         s += `<text x="${(a.x + b.x) / 2}" y="${(a.y + b.y) / 2}" font-size="${px(11)}" text-anchor="middle" fill="#3b4b36" stroke="#fff" stroke-width="${px(3)}" paint-order="stroke">${m2(dist(a, b))} m</text>`;
       }
     }
@@ -256,7 +281,13 @@ function openEditor(borderId) {
         s += `<circle cx="${(p.x + q.x) / 2}" cy="${(p.y + q.y) / 2}" r="${px(6)}" fill="#fff" stroke="#d6730a" stroke-width="${px(1.5)}" opacity=".85"/>`;
       });
       pts.forEach((p, i) => {
-        s += `<circle cx="${p.x}" cy="${p.y}" r="${px(i === st.selVertex ? 11 : 9)}" fill="${i === st.selVertex ? '#b3382c' : '#d6730a'}" stroke="#fff" stroke-width="${px(2)}"/>`;
+        const sel = i === st.selVertex;
+        if (p.fixed) {
+          const r = px(sel ? 10 : 8);
+          s += `<rect x="${p.x - r}" y="${p.y - r}" width="${2 * r}" height="${2 * r}" fill="${sel ? '#b3382c' : '#2f6b3a'}" stroke="#fff" stroke-width="${px(2)}"/>`;
+        } else {
+          s += `<circle cx="${p.x}" cy="${p.y}" r="${px(sel ? 11 : 9)}" fill="${sel ? '#b3382c' : '#d6730a'}" stroke="#fff" stroke-width="${px(2)}"/>`;
+        }
       });
     }
     svg.innerHTML = s;
@@ -290,8 +321,12 @@ function openEditor(borderId) {
       const isZone = st.sel.kind === 'zone';
       actions.push(
         btn('Edge lengths', false, lengthsDialog),
-        btn('Delete point', false, deleteVertex, st.selVertex < 0 || selPts().length <= 3),
+        btn('Delete point', false, deleteVertex, st.selVertex < 0 || selPts().length <= 3 || !!selPts()[st.selVertex]?.fixed),
       );
+      if (!isZone) {
+        const fixed = !!border.points[st.selVertex]?.fixed;
+        actions.push(btn(fixed ? 'Unlock point' : 'Lock point', fixed, toggleLock, st.selVertex < 0));
+      }
       if (isZone) {
         actions.push(
           btn('Zone details', false, () => zoneDialog(border, selZone(), update, false)),
@@ -325,7 +360,7 @@ function openEditor(borderId) {
     tools.append(modes);
     const hints = {
       view: border.zones.length ? 'Tap a zone to see or edit its plants. Drag to pan, pinch to zoom.' : 'Tap “Add zone” to mark where you planted something.',
-      edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, drag orange points to reshape, drag a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Drag orange points; drag a white dot to add a point. Tap a zone to edit it.',
+      edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, drag orange points to reshape, drag a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Green squares are locked points; drag orange points, or a white dot to add a point. Use Lock/Unlock point to change this. Tap a zone to edit it.',
       drawBorder: 'Tap the corners of the border one by one, then Finish. (Tap the green first point to close.)',
       drawZone: 'Tap the corners of the planted area, then Finish. With snap on, zones stay inside the border and cannot overlap other zones.',
     };
@@ -356,19 +391,26 @@ function openEditor(borderId) {
     }
   }
 
+  function toggleLock() {
+    const p = border.points[st.selVertex];
+    if (!p) return;
+    if (p.fixed) delete p.fixed; else p.fixed = true;
+    save(); update();
+  }
+
   function deleteVertex() {
     const pts = selPts();
-    if (st.selVertex >= 0 && pts.length > 3) { pts.splice(st.selVertex, 1); st.selVertex = -1; save(); update(); }
+    if (st.selVertex >= 0 && pts.length > 3 && !pts[st.selVertex].fixed) { pts.splice(st.selVertex, 1); st.selVertex = -1; save(); update(); }
   }
 
   function lengthsDialog() {
     const pts = selPts();
     const rows = pts.map((p, i) => {
       const q = pts[(i + 1) % pts.length];
-      return `<div class="row"><span class="grow">Point ${i + 1} → ${(i + 1) % pts.length + 1}</span><input type="number" step="0.01" min="0.01" style="width:7em" data-i="${i}" value="${m2(dist(p, q))}"> m</div>`;
+      return `<div class="row"><span class="grow">Point ${i + 1} → ${(i + 1) % pts.length + 1}</span><input type="number" step="0.01" min="0.01" style="width:7em" data-i="${i}" value="${m2(dist(p, q))}"${p.fixed && q.fixed ? ' disabled' : ''}> m</div>`;
     }).join('');
     openDialog(`<h2>Edge lengths</h2>
-      <p class="muted">Changing a length moves the next point along that edge. Adjust edges in order for a precise shape.</p>${rows}
+      <p class="muted">Changing a length moves a free point along that edge (locked points never move). Adjust edges in order for a precise shape.</p>${rows}
       <div class="dlg-btns"><button class="btn alt" id="l-cancel">Cancel</button><button class="btn" id="l-ok">Apply</button></div>`,
     d => {
       d.querySelector('#l-cancel').onclick = closeDialog;
@@ -376,7 +418,10 @@ function openEditor(borderId) {
         d.querySelectorAll('input[data-i]').forEach(inp => {
           const i = +inp.dataset.i, j = (i + 1) % pts.length;
           const len = parseFloat(inp.value) * 100;
-          if (len > 0 && Math.abs(len - dist(pts[i], pts[j])) > 0.5) pts[j] = setEdgeLength(pts[i], pts[j], len);
+          if (len > 0 && Math.abs(len - dist(pts[i], pts[j])) > 0.5) {
+            if (!pts[j].fixed) pts[j] = setEdgeLength(pts[i], pts[j], len);
+            else if (!pts[i].fixed) pts[i] = setEdgeLength(pts[j], pts[i], len);
+          }
         });
         save(); closeDialog(); update();
       };
@@ -407,7 +452,7 @@ function openEditor(borderId) {
       const zone = selZone();
       g.backup = pts.map(p => ({ ...p }));
       const vi = pts.findIndex(p => dpx(p, pt) < 18);
-      if (vi >= 0) { g.type = 'vertex'; g.i = vi; st.selVertex = vi; renderTools(); render(); return; }
+      if (vi >= 0) { g.type = pts[vi].fixed ? 'pan' : 'vertex'; g.keep = true; g.i = vi; st.selVertex = vi; renderTools(); render(); return; }
       const mi = pts.findIndex((p, i) => dpx({ x: (p.x + pts[(i + 1) % pts.length].x) / 2, y: (p.y + pts[(i + 1) % pts.length].y) / 2 }, pt) < 16);
       if (mi >= 0) {
         const q = pts[(mi + 1) % pts.length];
@@ -470,7 +515,7 @@ function openEditor(borderId) {
       }
       save(); update(); return;
     }
-    if (!done.moved && e.type === 'pointerup') onTap(done.pt);
+    if (!done.moved && !done.keep && e.type === 'pointerup') onTap(done.pt);
   };
   svg.addEventListener('pointerup', endPtr);
   svg.addEventListener('pointercancel', endPtr);

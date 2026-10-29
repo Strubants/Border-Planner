@@ -93,6 +93,21 @@ export function setEdgeLength(from, to, length) {
   return { x: from.x + (to.x - from.x) * f, y: from.y + (to.y - from.y) * f };
 }
 
+// Starting shapes. Points flagged `fixed` are the measured anchor points; the others are free to reshape.
 export const rectangle = (w, h) => [
-  { x: 0, y: 0 }, { x: w, y: 0 }, { x: w, y: h }, { x: 0, y: h },
+  { x: 0, y: 0, fixed: true }, { x: w, y: 0, fixed: true }, { x: w, y: h, fixed: true }, { x: 0, y: h, fixed: true },
 ];
+
+export const triangle = (base, h) => [
+  { x: base / 2, y: 0, fixed: true }, { x: base, y: h, fixed: true }, { x: 0, y: h, fixed: true },
+];
+
+// Ellipse (circle when w === h): the 4 extreme points are fixed, `perQuarter - 1` free points sit between them.
+export function ellipse(w, h, perQuarter = 4) {
+  const n = perQuarter * 4, pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * 2 * Math.PI - Math.PI / 2;
+    pts.push({ x: w / 2 + (w / 2) * Math.cos(a), y: h / 2 + (h / 2) * Math.sin(a), ...(i % perQuarter === 0 ? { fixed: true } : {}) });
+  }
+  return pts;
+}

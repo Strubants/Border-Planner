@@ -61,3 +61,5 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
   .tool-modes { margin-top: auto; }
   #hint { font-size: .78rem; padding: 4px 8px; right: auto; max-width: 70%; }
 }
+
+[hidden] { display: none !important; }
