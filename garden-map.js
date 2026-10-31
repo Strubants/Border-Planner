@@ -368,7 +368,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       <path d="${imageryBoundary}" fill="white" fill-rule="evenodd"/>
       <path d="${imageryBoundary}" fill="none" stroke="white" stroke-width="10" stroke-linejoin="round"/>`;
     const gridPath = satelliteView && planning.showGrid ? gridMarkup(stroke) : '';
-    const showOfficialParcel = satelliteView || planning.showOfficialParcel;
+    const showOfficialParcel = !satelliteView && planning.showOfficialParcel;
     parcelLayer.innerHTML = showOfficialParcel
       ? `<path d="${parcelPolygons}" class="garden-parcel-casing" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>
         <path d="${parcelPolygons}" class="garden-parcel-outline" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>`
