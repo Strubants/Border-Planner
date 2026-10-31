@@ -76,7 +76,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.classList.add('garden-map');
   svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', 'Interactive garden map. Drag to move the map; use the mouse wheel to zoom.');
+  svg.setAttribute('aria-label', 'Interactive garden map. Tap to add outline points, drag to pan, and pinch to zoom.');
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
   const parcelMask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
   parcelMask.id = maskId;
@@ -148,7 +148,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         </details>
         <details class="garden-tool-section" open>
           <summary><span>3</span> Place saved borders</summary>
-          <p>Choose a border, then place it at its measured size. Drag it to move and use the slider to rotate.</p>
+          <p>Tap the map to place a border. Drag the map to pan or a placed border to move it; pinch to zoom.</p>
           <div class="garden-tool-actions garden-place-row">
             <select id="garden-border-select" aria-label="Border to place"></select>
             <button class="btn" type="button" id="garden-place-border">Place</button>
@@ -179,6 +179,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     mode: 'pan',
     selectedPlacement: null,
     gesture: null,
+    activePointers: new Map(),
     shapeDraft: null,
     editingKind: null,
     editSnapshot: null,
@@ -246,6 +247,39 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       y: -(view.y + (event.clientY - rect.top) * scale),
     };
   };
+
+  function beginPinch() {
+    const pointers = [...state.activePointers.values()];
+    if (pointers.length < 2) return;
+    if (state.gesture && !['add', 'add-outline-point', 'pan'].includes(state.gesture.type)) return;
+    const [first, second] = pointers;
+    const rect = svg.getBoundingClientRect();
+    const centerX = (first.clientX + second.clientX) / 2;
+    const centerY = (first.clientY + second.clientY) / 2;
+    state.gesture = {
+      type: 'pinch',
+      startDistance: Math.max(1, Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY)),
+      startView: { ...view },
+      anchorX: view.x + (centerX - rect.left) * view.w / rect.width,
+      anchorY: -(view.y + (centerY - rect.top) * view.h / rect.height),
+    };
+  }
+
+  function updatePinch() {
+    const gesture = state.gesture;
+    const pointers = [...state.activePointers.values()];
+    if (gesture?.type !== 'pinch' || pointers.length < 2) return;
+    const [first, second] = pointers;
+    const rect = svg.getBoundingClientRect();
+    const centerX = (first.clientX + second.clientX) / 2;
+    const centerY = (first.clientY + second.clientY) / 2;
+    const distance = Math.max(1, Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY));
+    view.w = Math.min(20000, Math.max(8, gesture.startView.w * gesture.startDistance / distance));
+    view.h = view.w * rect.height / rect.width;
+    view.x = gesture.anchorX - (centerX - rect.left) * view.w / rect.width;
+    view.y = -gesture.anchorY - (centerY - rect.top) * view.h / rect.height;
+    draw();
+  }
 
   function tileImages() {
     const desiredResolution = view.w / Math.max(svg.clientWidth, 1);
@@ -538,7 +572,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     }
     state.mode = 'place';
     svg.classList.add('placing');
-    status.textContent = 'Tap the map where this border should go.';
+    status.textContent = 'Tap to place the border. Drag the map to pan and pinch to zoom.';
   }
 
   function shapeStorageKey(kind) {
@@ -588,7 +622,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     state.selectedVertex = -1;
     state.shapeDraft = { kind, points: [] };
     svg.classList.add('placing');
-    status.textContent = `Click around your ${shapeLabel(kind)}. Zoom and pan as needed.`;
+    status.textContent = `Tap to add points. Drag the map to pan and pinch to zoom while drawing your ${shapeLabel(kind)}.`;
     updateOutlineControls();
     draw();
   }
@@ -607,7 +641,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     state.selectedVertex = -1;
     setViewMode('satellite');
     svg.classList.remove('placing');
-    status.textContent = 'Drag a point to reshape the outline. Click an edge to add a point.';
+    status.textContent = 'Drag a point to reshape the outline. Tap an edge to add a point; drag the map to pan and pinch to zoom.';
     updateOutlineControls();
     draw();
   }
@@ -732,11 +766,16 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   svg.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
     svg.setPointerCapture(event.pointerId);
+    state.activePointers.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
+    if (state.activePointers.size > 1) {
+      beginPinch();
+      return;
+    }
     const point = pointAt(event);
     if (state.mode === 'place' || state.mode === 'boundary') {
       state.gesture = {
         type: 'add', mode: state.mode, kind: state.shapeDraft?.kind,
-        start: point, clientX: event.clientX, clientY: event.clientY,
+        pointerId: event.pointerId, start: point, clientX: event.clientX, clientY: event.clientY,
       };
       return;
     }
@@ -747,14 +786,14 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         state.editingKind = kind;
         state.selectedVertex = Number(index);
         state.gesture = {
-          type: 'move-outline-point', kind, index: Number(index), startX: point.x, startY: point.y,
+          type: 'move-outline-point', pointerId: event.pointerId, kind, index: Number(index), startX: point.x, startY: point.y,
           point: { ...planning[shapeStorageKey(kind)][Number(index)] },
         };
         updateOutlineControls();
         draw();
       } else {
         state.gesture = {
-          type: 'add-outline-point', kind: state.editingKind,
+          type: 'add-outline-point', pointerId: event.pointerId, kind: state.editingKind,
           clientX: event.clientX, clientY: event.clientY,
         };
       }
@@ -766,19 +805,36 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       const placement = planning.placements.find(item => item.id === id);
       if (placement) {
         state.selectedPlacement = id;
-        state.gesture = { type: 'move-border', id, start: point, x: placement.x, y: placement.y };
+        state.gesture = { type: 'move-border', pointerId: event.pointerId, id, start: point, x: placement.x, y: placement.y };
         renderPlacementControls();
       }
     } else {
-      state.gesture = { type: 'pan', clientX: event.clientX, clientY: event.clientY, x: view.x, y: view.y };
+      state.gesture = { type: 'pan', pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: view.x, y: view.y };
     }
     draw();
   });
 
   svg.addEventListener('pointermove', event => {
-    const gesture = state.gesture;
+    const activePointer = state.activePointers.get(event.pointerId);
+    if (activePointer) {
+      activePointer.clientX = event.clientX;
+      activePointer.clientY = event.clientY;
+    }
+    let gesture = state.gesture;
     if (!gesture || !svg.hasPointerCapture(event.pointerId)) return;
-    if (gesture.type === 'add') return;
+    if (gesture.type === 'pinch') {
+      updatePinch();
+      return;
+    }
+    if (gesture.pointerId !== event.pointerId) return;
+    if (gesture.type === 'add' || gesture.type === 'add-outline-point') {
+      if (Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8) return;
+      gesture = {
+        type: 'pan', pointerId: event.pointerId, clientX: gesture.clientX, clientY: gesture.clientY,
+        x: view.x, y: view.y,
+      };
+      state.gesture = gesture;
+    }
     if (gesture.type === 'move-outline-point') {
       const point = pointAt(event);
       const points = planning[shapeStorageKey(gesture.kind)];
@@ -805,8 +861,23 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   });
 
   const endGesture = event => {
-    if (!state.gesture) return;
+    state.activePointers.delete(event.pointerId);
     const gesture = state.gesture;
+    if (gesture?.type === 'pinch') {
+      if (state.activePointers.size > 1) {
+        updatePinch();
+      } else if (state.activePointers.size) {
+        const [pointerId, point] = state.activePointers.entries().next().value;
+        state.gesture = {
+          type: 'pan', pointerId, clientX: point.clientX, clientY: point.clientY,
+          x: view.x, y: view.y,
+        };
+      } else {
+        state.gesture = null;
+      }
+      return;
+    }
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
     state.gesture = null;
     if (gesture.type === 'add') {
       if (event.type === 'pointerup' && Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8) {
