@@ -17,7 +17,7 @@ function openDb() {
   });
 }
 
-export const emptyData = () => ({ version: 2, plants: [], borders: [] });
+export const emptyData = () => ({ version: 3, plants: [], borders: [], garden: null });
 
 export async function loadData() {
   const db = await openDb();

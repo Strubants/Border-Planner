@@ -37,7 +37,12 @@ function migrate(d) {
       });
     }
   }
-  d.version = 2;
+  if (!Object.hasOwn(d, 'garden')) {
+    d.garden = null;
+    changed = true;
+  }
+  if (d.version !== 3) changed = true;
+  d.version = 3;
   return changed;
 }
 
@@ -62,7 +67,7 @@ function setNav(active) {
 }
 
 document.querySelectorAll('#nav button').forEach(b => {
-  b.onclick = () => ({ list: showList, plants: showPlants, settings: showSettings })[b.dataset.nav]();
+  b.onclick = () => ({ list: showList, garden: showGarden, plants: showPlants, settings: showSettings })[b.dataset.nav]();
 });
 
 // ---------- dialogs ----------
@@ -119,6 +124,243 @@ function showList() {
     card.onclick = () => openEditor(b.id);
     items.append(card);
   }
+}
+
+// ---------- garden parcel lookup ----------
+function showGarden() {
+  setNav('garden');
+  setHeader('My Garden');
+  main.innerHTML = `<div class="pad garden-page">
+    <p>Find your address to see its Flemish administrative parcel outline and address location.</p>
+    <label for="garden-address">Address in Flanders</label>
+    <div class="row garden-search">
+      <input type="text" id="garden-address" autocomplete="street-address" placeholder="Street, house number, postcode, municipality">
+      <button class="btn" id="garden-search" type="button">Search</button>
+    </div>
+    <p class="muted">Address searches are sent to Digitaal Vlaanderen. Your selected address and parcel outline are saved on this device.</p>
+    <div id="garden-status" class="muted" role="status" aria-live="polite"></div>
+    <div id="garden-suggestions"></div>
+    <div id="garden-result"></div>
+  </div>`;
+
+  const input = $('garden-address');
+  const status = $('garden-status');
+  const suggestions = $('garden-suggestions');
+  const result = $('garden-result');
+  let suggestionTimer;
+  let suggestionSequence = 0;
+  let suggestionController;
+  let lookupSequence = 0;
+  let lookupController;
+
+  const apiJson = async (url, controller) => {
+    const response = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`The service returned HTTP ${response.status}.`);
+    return response.json();
+  };
+
+  const clearSuggestions = () => { suggestions.replaceChildren(); };
+
+  async function findSuggestions() {
+    const query = input.value.trim();
+    const sequence = ++suggestionSequence;
+    suggestionController?.abort();
+    clearSuggestions();
+    if (query.length < 2) {
+      status.textContent = query ? 'Enter at least two characters to search.' : '';
+      return;
+    }
+
+    const controller = new AbortController();
+    suggestionController = controller;
+    status.textContent = 'Searching addresses…';
+    try {
+      const url = new URL('https://geo.api.vlaanderen.be/Geolocation/v4/Suggestion');
+      url.search = new URLSearchParams({ q: query, c: '8' });
+      const response = await apiJson(url, controller);
+      if (sequence !== suggestionSequence) return;
+      const addresses = response.SuggestionResult;
+      if (!Array.isArray(addresses) || !addresses.length) {
+        status.textContent = 'No address suggestions found. Check the spelling or try a fuller address.';
+        return;
+      }
+      status.textContent = 'Choose the exact house-number address:';
+      for (const address of addresses) {
+        const button = document.createElement('button');
+        button.className = 'garden-suggestion';
+        button.type = 'button';
+        button.textContent = address;
+        button.onclick = () => loadGarden(address);
+        suggestions.append(button);
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError' && sequence === suggestionSequence) {
+        status.textContent = `Address search failed: ${error.message}`;
+      }
+    }
+  }
+
+  function parseGeometry(value) {
+    const geometry = typeof value === 'string' ? JSON.parse(value) : value;
+    if (!geometry || !Array.isArray(geometry.coordinates)) throw new Error('The parcel service returned no usable outline.');
+    const sourcePolygons = geometry.type === 'Polygon'
+      ? [geometry.coordinates]
+      : geometry.type === 'MultiPolygon' ? geometry.coordinates : [];
+    const polygons = sourcePolygons.map(rings => rings
+      .filter(ring => Array.isArray(ring))
+      .map(ring => ring.map(point => {
+        if (!Array.isArray(point) || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
+          throw new Error('The parcel outline contains invalid coordinates.');
+        }
+        return [point[0], point[1]];
+      }))
+      .filter(ring => ring.length >= 4))
+      .filter(rings => rings.length);
+    if (!polygons.length) throw new Error('The parcel service returned no drawable polygon.');
+    return polygons;
+  }
+
+  async function loadGarden(address) {
+    const sequence = ++lookupSequence;
+    lookupController?.abort();
+    const controller = new AbortController();
+    lookupController = controller;
+    input.value = address;
+    clearSuggestions();
+    status.textContent = 'Finding the address and its parcel…';
+    try {
+      const locationUrl = new URL('https://geo.api.vlaanderen.be/Geolocation/v4/Location');
+      locationUrl.search = new URLSearchParams({ q: address, c: '1' });
+      const locationResponse = await apiJson(locationUrl, controller);
+      const location = locationResponse.LocationResult?.[0];
+      if (!location) throw new Error('No matching address was returned.');
+      if (!location.Housenumber) {
+        throw new Error('Choose a suggestion for an individual house number; a street or municipality alone cannot identify one parcel.');
+      }
+      const x = location.Location?.X_Lambert72;
+      const y = location.Location?.Y_Lambert72;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('The address result has no usable map coordinates.');
+
+      const parcelUrl = new URL('https://geo.api.vlaanderen.be/capakey/v2/parcel');
+      parcelUrl.search = new URLSearchParams({
+        x: String(x),
+        y: String(y),
+        geometry: 'full',
+        srs: '31370',
+        data: 'adp',
+        status: 'actual',
+      });
+      const parcelResponse = await apiJson(parcelUrl, controller);
+      if (parcelResponse.result?.succes === false) {
+        throw new Error(parcelResponse.result.errorMessage || 'The parcel service could not find a parcel at this address.');
+      }
+      const polygons = parseGeometry(parcelResponse.geometry?.shape);
+      const parsedCenter = typeof parcelResponse.geometry.center === 'string'
+        ? JSON.parse(parcelResponse.geometry.center)
+        : parcelResponse.geometry.center;
+      let center = parsedCenter?.type === 'Point' &&
+        Number.isFinite(parsedCenter.coordinates?.[0]) && Number.isFinite(parsedCenter.coordinates?.[1])
+        ? parsedCenter.coordinates : null;
+      if (!center) {
+        const coordinates = polygons.flat(2);
+        center = [
+          (Math.min(...coordinates.map(point => point[0])) + Math.max(...coordinates.map(point => point[0]))) / 2,
+          (Math.min(...coordinates.map(point => point[1])) + Math.max(...coordinates.map(point => point[1]))) / 2,
+        ];
+      }
+      const garden = {
+        address: location.FormattedAddress || address,
+        location: { x, y, type: location.LocationType || '' },
+        parcel: {
+          capakey: parcelResponse.capakey || '',
+          municipalityName: parcelResponse.municipalityName || location.Municipality || '',
+          sectionCode: parcelResponse.sectionCode || '',
+          center,
+          polygons,
+        },
+      };
+      if (sequence !== lookupSequence) return;
+      data.garden = garden;
+      save();
+      status.textContent = 'Parcel found. Check the outline against your actual garden boundary.';
+      renderGardenResult(result, garden);
+    } catch (error) {
+      if (error.name !== 'AbortError' && sequence === lookupSequence) {
+        status.textContent = `Could not load this parcel: ${error.message}`;
+      }
+    }
+  }
+
+  input.addEventListener('input', () => {
+    clearTimeout(suggestionTimer);
+    suggestionTimer = setTimeout(findSuggestions, 350);
+  });
+  $('garden-search').onclick = () => {
+    clearTimeout(suggestionTimer);
+    findSuggestions();
+  };
+  input.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      clearTimeout(suggestionTimer);
+      findSuggestions();
+    }
+  });
+
+  if (data.garden) {
+    input.value = data.garden.address;
+    status.textContent = 'Showing the saved parcel. Search for another address to replace it.';
+    renderGardenResult(result, data.garden);
+  } else {
+    status.textContent = 'Search for an address, then select an individual house-number result.';
+  }
+}
+
+function renderGardenResult(container, garden) {
+  const rings = garden.parcel.polygons.flat();
+  const points = rings.flat();
+  const xs = points.map(point => point[0]), ys = points.map(point => point[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const width = Math.max(maxX - minX, 1), height = Math.max(maxY - minY, 1);
+  const padding = Math.max(width, height) * 0.1;
+  const viewBox = `${minX - padding} ${-maxY - padding} ${width + padding * 2} ${height + padding * 2}`;
+  const paths = garden.parcel.polygons.map(polygon => polygon.map(ring =>
+    `M${ring.map(([x, y]) => `${x},${-y}`).join('L')}Z`).join('')).join('');
+  const markerX = garden.location.x, markerY = -garden.location.y;
+  const parcelCenterX = garden.parcel.center[0], parcelCenterY = -garden.parcel.center[1];
+  const area = garden.parcel.polygons.reduce((sum, polygon) => {
+    return sum + polygon.reduce((polygonArea, ring, ringIndex) => {
+      let value = 0;
+      for (let i = 0; i < ring.length - 1; i++) {
+        value += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+      }
+      return polygonArea + (ringIndex === 0 ? 1 : -1) * Math.abs(value) / 2;
+    }, 0);
+  }, 0);
+  const safe = esc;
+
+  container.innerHTML = `<section class="card garden-card">
+    <h2>${safe(garden.address)}</h2>
+    <p class="muted">${safe(garden.parcel.municipalityName)}${garden.parcel.capakey ? ` · Parcel ${safe(garden.parcel.capakey)}` : ''}${area ? ` · ${area.toFixed(0)} m²` : ''}</p>
+    <div class="garden-map-wrap">
+      <svg class="garden-map" viewBox="${viewBox}" role="img" aria-label="Parcel outline with address point and parcel center">
+        <path d="${paths}" fill="#dcebcf" fill-rule="evenodd" stroke="#416c34" stroke-width="${Math.max(width, height) * 0.008}" stroke-linejoin="round"/>
+        <circle cx="${parcelCenterX}" cy="${parcelCenterY}" r="${Math.max(width, height) * 0.012}" class="garden-center"/>
+        <circle cx="${markerX}" cy="${markerY}" r="${Math.max(width, height) * 0.018}" class="garden-address-point"/>
+      </svg>
+    </div>
+    <div class="garden-legend">
+      <span><i class="garden-address-key"></i>Address point</span>
+      <span><i class="garden-center-key"></i>Parcel center</span>
+      <span><i class="garden-parcel-key"></i>Administrative parcel</span>
+    </div>
+    <p class="muted">The address marker is a geocoded reference point, not a house footprint. Parcel boundaries can differ from fences and usable garden edges; verify them before planning.</p>
+    <p class="muted">Address location type: ${safe(garden.location.type || 'Not specified')} · Coordinates: ${garden.location.x.toFixed(2)}, ${garden.location.y.toFixed(2)} (Lambert 72)</p>
+  </section>`;
 }
 
 function newBorderDialog() {

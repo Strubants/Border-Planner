@@ -34,6 +34,28 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
 .cal .m b { display: block; margin-bottom: 4px; }
 .cal .m small { display: block; color: #555; }
 
+/* garden */
+.garden-page > p:first-child { margin-top: 0; }
+.garden-search { align-items: stretch; }
+.garden-search input { min-width: 0; flex: 1; }
+.garden-search button { flex: none; }
+.garden-suggestion { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--line); background: #fff; color: inherit; }
+.garden-suggestion:first-child { border-radius: 10px 10px 0 0; }
+.garden-suggestion:last-child { border-radius: 0 0 10px 10px; }
+.garden-suggestion:only-child { border-radius: 10px; }
+.garden-card { margin-top: 14px; }
+.garden-card h2 { margin: 0 0 4px; font-size: 1.05rem; }
+.garden-map-wrap { width: 100%; height: min(58vh, 440px); min-height: 240px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background-color: #f3f6ee; background-image: linear-gradient(45deg, #e8eee1 25%, transparent 25%), linear-gradient(-45deg, #e8eee1 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e8eee1 75%), linear-gradient(-45deg, transparent 75%, #e8eee1 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
+.garden-map { width: 100%; height: 100%; display: block; }
+.garden-center { fill: #fff; stroke: #545d58; stroke-width: 2; }
+.garden-address-point { fill: #c5372e; stroke: #fff; stroke-width: 3; }
+.garden-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0; font-size: .82rem; }
+.garden-legend span { display: flex; align-items: center; gap: 6px; }
+.garden-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 50%; }
+.garden-address-key { background: #c5372e; border: 2px solid #fff; outline: 1px solid #c5372e; }
+.garden-center-key { background: #fff; border: 2px solid #545d58; }
+.garden-parcel-key { background: #dcebcf; border: 1px solid #416c34; border-radius: 2px !important; }
+
 /* editor */
 #stage { flex: 1; position: relative; min-height: 0; background: #f4f7ef; }
 #svg { width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
