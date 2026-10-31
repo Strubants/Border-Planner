@@ -1,8 +1,6 @@
 import { uid } from './store.js';
 
 const ORTHO_URL = 'https://geo.api.vlaanderen.be/OFW/wmts';
-const GRB_URL = 'https://geo.api.vlaanderen.be/GRB/wmts';
-const WFS_URL = 'https://geo.api.vlaanderen.be/GRB/wfs';
 const TILE_ORIGIN_X = 9928;
 const TILE_ORIGIN_Y = 329072;
 const TILE_SIZE = 256;
@@ -18,10 +16,12 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 
 function gardenPlanning(garden) {
   garden.planning ??= {};
-  garden.planning.layer ??= 'aerial';
-  garden.planning.showBuildings ??= true;
+  garden.planning.showGrid ??= false;
+  garden.planning.snapToGrid ??= false;
+  garden.planning.mapMargin ??= 5;
   garden.planning.placements ??= [];
   garden.planning.referencePoints ??= [];
+  garden.planning.gardenBoundary ??= null;
   return garden.planning;
 }
 
@@ -35,16 +35,6 @@ function parcelBounds(garden) {
   };
 }
 
-function geometryPath(geometry) {
-  if (!geometry) return '';
-  const polygons = geometry.type === 'Polygon' ? [geometry.coordinates]
-    : geometry.type === 'MultiPolygon' ? geometry.coordinates : [];
-  return polygons.flatMap(rings => rings).map(ring => {
-    if (!Array.isArray(ring) || !ring.length) return '';
-    return `M${ring.map(point => `${point[0]},${-point[1]}`).join('L')}Z`;
-  }).join('');
-}
-
 export function mountGardenMap(container, garden, { borders, plants, onChange }) {
   const planning = gardenPlanning(garden);
   const bounds = parcelBounds(garden);
@@ -52,33 +42,46 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   svg.classList.add('garden-map');
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', 'Interactive garden map. Drag to move the map; use the mouse wheel to zoom.');
-  const [tileLayer, buildingLayer, parcelLayer, borderLayer, pointLayer] = ['tiles', 'buildings', 'parcel', 'borders', 'points']
+  const [tileLayer, parcelLayer, borderLayer, pointLayer] = ['tiles', 'parcel', 'borders', 'points']
     .map(name => {
       const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       group.dataset.layer = name;
       return group;
     });
-  svg.append(tileLayer, buildingLayer, parcelLayer, borderLayer, pointLayer);
+  svg.append(tileLayer, parcelLayer, borderLayer, pointLayer);
   container.innerHTML = `
     <div class="garden-map-controls">
-      <label class="garden-layer-label">Map layer
-        <select id="garden-layer">
-          <option value="aerial">Aerial photo</option>
-          <option value="grb">GRB reference map</option>
+      <label class="garden-margin-label">Minimum margin
+        <select id="garden-map-margin">
+          <option value="5">5 m</option>
+          <option value="10">10 m</option>
+          <option value="20">20 m</option>
         </select>
       </label>
-      <label class="garden-building-toggle"><input type="checkbox" id="garden-buildings"> Building outlines</label>
       <button class="btn alt" type="button" id="garden-fit">Fit parcel</button>
+      <label class="garden-map-toggle"><input type="checkbox" id="garden-grid"><span id="garden-grid-label">Distance grid</span></label>
+      <label class="garden-map-toggle"><input type="checkbox" id="garden-snap-grid"> Snap to grid</label>
       <span class="garden-zoom-controls"><button type="button" id="garden-zoom-out" aria-label="Zoom out">−</button><button type="button" id="garden-zoom-in" aria-label="Zoom in">+</button></span>
     </div>
     <div class="garden-map-wrap"><div class="garden-map-status" id="garden-map-status" role="status" aria-live="polite"></div></div>
     <div class="garden-map-legend">
-      <span><i class="garden-address-key"></i>Address point</span>
-      <span><i class="garden-center-key"></i>Parcel center</span>
-      <span><i class="garden-parcel-key"></i>Parcel boundary</span>
-      <span><i class="garden-building-key"></i>Building reference</span>
+      <span><i class="garden-parcel-key"></i>Your parcel</span>
+      <span><i class="garden-boundary-key"></i>Your garden outline</span>
+      <span><i class="garden-border-key"></i>Placed borders</span>
     </div>
-    <p class="muted">Map references can be incomplete or out of date. The address marker is not a house footprint. Border placement is an estimate; check it against your property before relying on it.</p>
+    <p class="muted">Aerial imagery is for visual reference; the parcel line is administrative data and may not match your actual garden boundary.</p>
+    <div class="garden-boundary-tools">
+      <h3>Garden outline</h3>
+      <p class="muted">The parcel can include more than your garden. Draw your actual usable garden boundary to make this overview your own.</p>
+      <div class="row">
+        <button class="btn alt" type="button" id="garden-draw-boundary">Draw / redraw outline</button>
+        <button class="btn" type="button" id="garden-finish-boundary" hidden>Finish outline</button>
+        <button class="btn alt" type="button" id="garden-undo-boundary" hidden>Undo point</button>
+        <button class="btn alt" type="button" id="garden-cancel-boundary" hidden>Cancel</button>
+        <button class="btn alt" type="button" id="garden-remove-boundary" hidden>Remove outline</button>
+      </div>
+      <p id="garden-boundary-status" class="muted"></p>
+    </div>
     <div class="garden-border-tools">
       <h3>Place borders</h3>
       <p class="muted">Choose a saved border, then tap the map to place it. Drag a placed border to move it. Scale 1× preserves its measured dimensions.</p>
@@ -97,18 +100,20 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       </div>
       <div id="garden-reference-list"></div>
     </div>
-    <p class="garden-attribution">Map data: <a href="https://www.vlaanderen.be/datavindplaats/catalogus/wmts-grb" target="_blank" rel="noreferrer">Digitaal Vlaanderen GRB</a> and <a href="https://metadata.vlaanderen.be/srv/api/records/50134be3-f0cd-47c5-8f6e-4a0936287947" target="_blank" rel="noreferrer">orthophoto service</a>.</p>`;
+    <p class="garden-attribution">Aerial imagery: <a href="https://metadata.vlaanderen.be/srv/api/records/50134be3-f0cd-47c5-8f6e-4a0936287947" target="_blank" rel="noreferrer">Digitaal Vlaanderen orthophoto service</a>.</p>`;
   const mapWrap = container.querySelector('.garden-map-wrap');
   mapWrap.append(svg);
 
   const status = container.querySelector('#garden-map-status');
   tileLayer.addEventListener('error', () => {
-    status.textContent = 'Some map tiles could not be loaded. Check your connection and try again.';
+    status.textContent = 'Aerial imagery could not be loaded. Check your connection and try again.';
   }, true);
   const placementsList = container.querySelector('#garden-placements');
   const referencesList = container.querySelector('#garden-reference-list');
-  const layerInput = container.querySelector('#garden-layer');
-  const buildingsInput = container.querySelector('#garden-buildings');
+  const marginInput = container.querySelector('#garden-map-margin');
+  const gridInput = container.querySelector('#garden-grid');
+  const snapGridInput = container.querySelector('#garden-snap-grid');
+  const boundaryStatus = container.querySelector('#garden-boundary-status');
   const borderSelect = container.querySelector('#garden-border-select');
   const refNameInput = container.querySelector('#garden-reference-name');
   const view = { x: 0, y: 0, w: 1, h: 1 };
@@ -117,13 +122,10 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     mode: 'pan',
     selectedPlacement: null,
     gesture: null,
-    features: [],
-    featureMarkup: '',
+    boundaryDraft: null,
     tileKey: '',
-    featureController: null,
-    featureTimer: null,
-    featureSequence: 0,
     resizeObserver: null,
+    hasFitted: false,
   };
 
   const resizeView = () => {
@@ -135,14 +137,15 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   function fitParcel() {
     const rect = svg.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const width = Math.max(bounds.maxX - bounds.minX, 10);
-    const height = Math.max(bounds.maxY - bounds.minY, 10);
-    view.w = Math.max(width * 1.35, height * 1.35 * rect.width / rect.height);
+    const margin = Number(marginInput.value);
+    const width = Math.max(bounds.maxX - bounds.minX + margin * 2, 10);
+    const height = Math.max(bounds.maxY - bounds.minY + margin * 2, 10);
+    view.w = Math.max(width, height * rect.width / rect.height);
     view.h = view.w * rect.height / rect.width;
     view.x = (bounds.minX + bounds.maxX) / 2 - view.w / 2;
     view.y = -(bounds.minY + bounds.maxY) / 2 - view.h / 2;
+    state.hasFitted = true;
     draw();
-    scheduleBuildings();
   }
 
   const pointAt = event => {
@@ -176,8 +179,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     const maxCol = Math.min(matrix.width - 1, Math.floor((east - TILE_ORIGIN_X) / tileWorldSize));
     const minRow = Math.max(0, Math.floor((TILE_ORIGIN_Y - north) / tileWorldSize));
     const maxRow = Math.min(matrix.width - 1, Math.floor((TILE_ORIGIN_Y - south) / tileWorldSize));
-    const base = planning.layer === 'grb' ? GRB_URL : ORTHO_URL;
-    const layer = planning.layer === 'grb' ? 'grb_bsk' : 'ofw';
     const images = [];
     for (let row = minRow; row <= maxRow; row++) {
       for (let col = minCol; col <= maxCol; col++) {
@@ -185,15 +186,15 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         const top = TILE_ORIGIN_Y - row * tileWorldSize;
         const query = new URLSearchParams({
           SERVICE: 'WMTS', VERSION: '1.0.0', REQUEST: 'GetTile',
-          LAYER: layer, STYLE: 'default', FORMAT: 'image/png',
+          LAYER: 'ofw', STYLE: 'default', FORMAT: 'image/png',
           TILEMATRIXSET: 'BPL72VL', TILEMATRIX: matrix.id,
           TILEROW: String(row), TILECOL: String(col),
         });
-        images.push(`<image href="${base}?${query}" x="${left}" y="${-top}" width="${tileWorldSize}" height="${tileWorldSize}" preserveAspectRatio="none"/>`);
+        images.push(`<image href="${ORTHO_URL}?${query}" x="${left}" y="${-top}" width="${tileWorldSize}" height="${tileWorldSize}" preserveAspectRatio="none"/>`);
       }
     }
     return {
-      key: `${layer}/${matrix.id}/${minCol}/${maxCol}/${minRow}/${maxRow}`,
+      key: `${matrix.id}/${minCol}/${maxCol}/${minRow}/${maxRow}`,
       markup: images.join(''),
     };
   }
@@ -202,6 +203,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     resizeView();
     svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
     const stroke = Math.max(view.w * 0.002, 0.15);
+    container.querySelector('#garden-grid-label').textContent = `Distance grid (${gridStep()} m)`;
     const tiles = tileImages();
     if (tiles.key !== state.tileKey) {
       tileLayer.innerHTML = tiles.markup;
@@ -209,10 +211,11 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     }
     const polygons = garden.parcel.polygons.map(rings => rings.map(ring =>
       `M${ring.map(([x, y]) => `${x},${-y}`).join('L')}Z`).join('')).join('');
-    buildingLayer.innerHTML = planning.showBuildings ? state.featureMarkup : '';
-    parcelLayer.innerHTML = `<path d="${polygons}" fill="#b9d59a" fill-opacity=".12" fill-rule="evenodd" stroke="#396b2c" stroke-width="${stroke * 1.6}" vector-effect="non-scaling-stroke"/>
-      <circle cx="${garden.parcel.center[0]}" cy="${-garden.parcel.center[1]}" r="${stroke * 2}" class="garden-center"/>
-      <circle cx="${garden.location.x}" cy="${-garden.location.y}" r="${stroke * 2.6}" class="garden-address-point"/>`;
+    const gridPath = planning.showGrid ? gridMarkup(stroke) : '';
+    parcelLayer.innerHTML = `<path d="${polygons}" class="garden-parcel-casing" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>
+      <path d="${polygons}" class="garden-parcel-outline" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>
+      ${gridPath}
+      ${gardenBoundaryMarkup(stroke)}`;
 
     let markup = '';
     for (const placement of planning.placements) {
@@ -235,10 +238,42 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     }
 
     borderLayer.innerHTML = markup;
-    pointLayer.innerHTML = planning.referencePoints.map(point => `<g class="garden-custom-point">
+    pointLayer.innerHTML = planning.referencePoints.map(point => `<g class="garden-custom-point" data-reference="${esc(point.id)}">
         <circle cx="${point.x}" cy="${-point.y}" r="${stroke * 2.8}"/>
         <text x="${point.x + stroke * 3.2}" y="${-point.y - stroke * 2}" font-size="${Math.max(view.w * 0.018, 0.8)}">${esc(point.name)}</text>
       </g>`).join('');
+  }
+
+  function gridStep() {
+    const desired = view.w / 12;
+    const power = 10 ** Math.floor(Math.log10(desired));
+    return [1, 2, 5, 10].map(multiplier => multiplier * power)
+      .find(value => value >= desired) || power * 10;
+  }
+
+  function gridMarkup(stroke) {
+    const step = gridStep();
+    const north = -view.y, south = -(view.y + view.h);
+    const firstX = Math.floor(view.x / step) * step;
+    const firstY = Math.floor(south / step) * step;
+    const lines = [];
+    for (let x = firstX; x <= view.x + view.w; x += step) lines.push(`M${x},${-north}V${-south}`);
+    for (let y = firstY; y <= north; y += step) lines.push(`M${view.x},${-y}H${view.x + view.w}`);
+    return `<path d="${lines.join('')}" class="garden-grid" stroke-width="${stroke * 0.7}" vector-effect="non-scaling-stroke"/>`;
+  }
+
+  function gardenBoundaryMarkup(stroke) {
+    const boundary = state.boundaryDraft ?? planning.gardenBoundary;
+    if (!boundary?.length) return '';
+    const closed = state.boundaryDraft === null && boundary.length >= 3;
+    const points = boundary.map(point => `${point.x},${-point.y}`).join(' ');
+    const shape = closed
+      ? `<polygon points="${points}" class="garden-boundary" stroke-width="${stroke * 2}" vector-effect="non-scaling-stroke"/>`
+      : `<polyline points="${points}" class="garden-boundary-draft" stroke-width="${stroke * 2}" vector-effect="non-scaling-stroke"/>`;
+    const handles = state.boundaryDraft
+      ? boundary.map(point => `<circle cx="${point.x}" cy="${-point.y}" r="${stroke * 2.2}" class="garden-boundary-handle"/>`).join('')
+      : '';
+    return shape + handles;
   }
 
   function dataPlantColor(entry) {
@@ -246,6 +281,13 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   }
 
   const dataPlants = plants;
+
+  function mapPoint(event) {
+    const point = pointAt(event);
+    if (!planning.snapToGrid) return point;
+    const step = gridStep();
+    return { x: Math.round(point.x / step) * step, y: Math.round(point.y / step) * step };
+  }
 
   function renderPlacementControls() {
     placementsList.replaceChildren();
@@ -337,48 +379,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     container.querySelector('#garden-place-border').disabled = !available.length;
   }
 
-  function scheduleBuildings() {
-    clearTimeout(state.featureTimer);
-    if (!planning.showBuildings) return;
-    state.featureTimer = setTimeout(loadBuildings, 250);
-  }
-
-  async function loadBuildings() {
-    state.featureController?.abort();
-    const controller = new AbortController();
-    state.featureController = controller;
-    const sequence = ++state.featureSequence;
-    const north = -view.y, south = -(view.y + view.h);
-    const url = new URL(WFS_URL);
-    url.search = new URLSearchParams({
-      service: 'WFS', version: '2.0.0', request: 'GetFeature',
-      typeNames: 'GRB:GBG', outputFormat: 'application/json',
-      srsName: 'EPSG:31370', count: '300',
-      bbox: `${view.x},${south},${view.x + view.w},${north},EPSG:31370`,
-    });
-    status.textContent = 'Loading building reference features…';
-    try {
-      const response = await fetch(url, { signal: controller.signal });
-      if (!response.ok) throw new Error(`GRB returned HTTP ${response.status}.`);
-      const collection = await response.json();
-      if (sequence !== state.featureSequence) return;
-      if (!Array.isArray(collection.features)) throw new Error('GRB returned an invalid feature collection.');
-      state.features = collection.features;
-      state.featureMarkup = state.features.map(feature => {
-        const path = geometryPath(feature.geometry);
-        return path ? `<path d="${path}" class="garden-building-feature"/>` : '';
-      }).join('');
-      status.textContent = state.features.length === 300
-        ? 'Showing 300 building references. Zoom in for more detail.'
-        : `${state.features.length} building reference feature${state.features.length === 1 ? '' : 's'} loaded.`;
-      draw();
-    } catch (error) {
-      if (error.name !== 'AbortError' && sequence === state.featureSequence) {
-        status.textContent = `Building references unavailable: ${error.message}`;
-      }
-    }
-  }
-
   function beginPlacement() {
     if (!borderSelect.value) {
       status.textContent = 'Select a saved border first.';
@@ -387,6 +387,41 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     state.mode = 'place';
     svg.classList.add('placing');
     status.textContent = 'Tap the map where this border should go.';
+  }
+
+  function beginBoundary() {
+    state.mode = 'boundary';
+    state.boundaryDraft = [];
+    svg.classList.add('placing');
+    updateBoundaryControls();
+    status.textContent = 'Tap around the edge of your garden to draw a new outline.';
+    draw();
+  }
+
+  function updateBoundaryControls() {
+    const drawing = state.boundaryDraft !== null;
+    container.querySelector('#garden-draw-boundary').hidden = drawing;
+    container.querySelector('#garden-finish-boundary').hidden = !drawing;
+    container.querySelector('#garden-undo-boundary').hidden = !drawing;
+    container.querySelector('#garden-cancel-boundary').hidden = !drawing;
+    container.querySelector('#garden-remove-boundary').hidden = drawing || !planning.gardenBoundary?.length;
+    container.querySelector('#garden-finish-boundary').disabled = (state.boundaryDraft?.length ?? 0) < 3;
+    container.querySelector('#garden-undo-boundary').disabled = !state.boundaryDraft?.length;
+    boundaryStatus.textContent = planning.gardenBoundary?.length
+      ? 'Custom garden outline saved. You can redraw it at any time.'
+      : 'No custom garden outline yet; the parcel outline is shown as a reference.';
+    if (drawing) boundaryStatus.textContent = `${state.boundaryDraft.length} points added. At least 3 are needed to finish.`;
+  }
+
+  function finishBoundary() {
+    if (!state.boundaryDraft || state.boundaryDraft.length < 3) return;
+    planning.gardenBoundary = state.boundaryDraft.map(point => ({ ...point }));
+    state.boundaryDraft = null;
+    state.mode = 'pan';
+    svg.classList.remove('placing');
+    updateBoundaryControls();
+    status.textContent = 'Garden outline saved.';
+    draw(); onChange();
   }
 
   function beginReference() {
@@ -402,7 +437,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   }
 
   function finishPlacement(event) {
-    const point = pointAt(event);
+    const point = mapPoint(event);
     if (state.mode === 'place') {
       const border = borders.find(item => item.id === borderSelect.value);
       if (!border) return;
@@ -432,8 +467,8 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     if (event.button !== 0) return;
     svg.setPointerCapture(event.pointerId);
     const point = pointAt(event);
-    if (state.mode === 'place' || state.mode === 'reference') {
-      state.gesture = { type: 'add', start: point, clientX: event.clientX, clientY: event.clientY };
+    if (state.mode === 'place' || state.mode === 'reference' || state.mode === 'boundary') {
+      state.gesture = { type: 'add', mode: state.mode, start: point, clientX: event.clientX, clientY: event.clientY };
       return;
     }
     const target = event.target.closest?.('[data-placement]');
@@ -472,17 +507,22 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   });
 
   const endGesture = event => {
-    if (!state.gesture || state.gesture.type === 'add' && state.mode !== 'place' && state.mode !== 'reference') return;
+    if (!state.gesture || state.gesture.type === 'add' &&
+      !['place', 'reference', 'boundary'].includes(state.gesture.mode)) return;
     const gesture = state.gesture;
     state.gesture = null;
     if (gesture.type === 'add') {
-      if (event.type === 'pointerup' && Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8) finishPlacement(event);
+      if (event.type === 'pointerup' && Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8) {
+        if (gesture.mode === 'boundary') {
+          state.boundaryDraft.push(mapPoint(event));
+          updateBoundaryControls(); draw();
+        } else {
+          finishPlacement(event);
+        }
+      }
     } else if (gesture.type === 'move-border') {
       onChange();
       status.textContent = 'Border moved.';
-      scheduleBuildings();
-    } else if (gesture.type === 'pan') {
-      scheduleBuildings();
     }
   };
   svg.addEventListener('pointerup', endGesture);
@@ -492,39 +532,55 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     const point = pointAt(event);
     const rect = svg.getBoundingClientRect();
     const fx = (event.clientX - rect.left) / rect.width;
-    const fy = (event.clientY - rect.top) / rect.width;
+    const fy = (event.clientY - rect.top) / rect.height;
     view.w = Math.min(20000, Math.max(8, view.w * (event.deltaY > 0 ? 1.2 : 1 / 1.2)));
     view.h = view.w * rect.height / rect.width;
     view.x = point.x - fx * view.w;
-    view.y = -point.y - fy * view.w;
-    draw(); scheduleBuildings();
+    view.y = -point.y - fy * view.h;
+    draw();
   }, { passive: false });
 
-  layerInput.value = planning.layer;
-  layerInput.onchange = () => {
-    planning.layer = layerInput.value;
+  marginInput.value = String([5, 10, 20].includes(planning.mapMargin) ? planning.mapMargin : 5);
+  marginInput.onchange = () => {
+    planning.mapMargin = Number(marginInput.value);
+    fitParcel();
+    onChange();
+  };
+  gridInput.checked = planning.showGrid;
+  gridInput.onchange = () => {
+    planning.showGrid = gridInput.checked;
+    if (!planning.showGrid) {
+      planning.snapToGrid = false;
+      snapGridInput.checked = false;
+    }
     draw(); onChange();
   };
-  buildingsInput.checked = planning.showBuildings;
-  buildingsInput.onchange = () => {
-    planning.showBuildings = buildingsInput.checked;
-    if (!planning.showBuildings) {
-      state.featureController?.abort();
-      state.features = [];
-      state.featureMarkup = '';
-      state.featureSequence++;
-      status.textContent = 'Building reference layer hidden.';
-      draw();
-    } else {
-      scheduleBuildings();
+  snapGridInput.checked = planning.snapToGrid ?? false;
+  snapGridInput.onchange = () => {
+    planning.snapToGrid = snapGridInput.checked;
+    if (planning.snapToGrid) {
+      planning.showGrid = true;
+      gridInput.checked = true;
     }
-    onChange();
+    draw(); onChange();
   };
   container.querySelector('#garden-fit').onclick = fitParcel;
   container.querySelector('#garden-zoom-in').onclick = () => zoomAt(1 / 1.4);
   container.querySelector('#garden-zoom-out').onclick = () => zoomAt(1.4);
   container.querySelector('#garden-place-border').onclick = beginPlacement;
   container.querySelector('#garden-add-reference').onclick = beginReference;
+  container.querySelector('#garden-draw-boundary').onclick = beginBoundary;
+  container.querySelector('#garden-finish-boundary').onclick = finishBoundary;
+  container.querySelector('#garden-undo-boundary').onclick = () => {
+    state.boundaryDraft?.pop(); updateBoundaryControls(); draw();
+  };
+  container.querySelector('#garden-cancel-boundary').onclick = () => {
+    state.boundaryDraft = null; state.mode = 'pan'; svg.classList.remove('placing'); updateBoundaryControls(); draw();
+  };
+  container.querySelector('#garden-remove-boundary').onclick = () => {
+    planning.gardenBoundary = null;
+    updateBoundaryControls(); draw(); onChange();
+  };
 
   function zoomAt(factor) {
     const centerX = view.x + view.w / 2;
@@ -534,19 +590,31 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     view.h = view.w * rect.height / rect.width;
     view.x = centerX - view.w / 2;
     view.y = centerY - view.h / 2;
-    draw(); scheduleBuildings();
+    draw();
+  }
+
+  function resizeMap() {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    if (!state.hasFitted) {
+      fitParcel();
+      return;
+    }
+    const centerY = view.y + view.h / 2;
+    view.h = view.w * rect.height / rect.width;
+    view.y = centerY - view.h / 2;
+    draw();
   }
 
   populateBorderSelect();
   renderPlacementControls();
   renderReferenceList();
-  state.resizeObserver = new ResizeObserver(fitParcel);
+  updateBoundaryControls();
+  state.resizeObserver = new ResizeObserver(resizeMap);
   state.resizeObserver.observe(svg);
   initialFrame = requestAnimationFrame(fitParcel);
   return () => {
     cancelAnimationFrame(initialFrame);
     state.resizeObserver.disconnect();
-    state.featureController?.abort();
-    clearTimeout(state.featureTimer);
   };
 }
