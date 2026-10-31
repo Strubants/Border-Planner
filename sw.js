@@ -1,4 +1,4 @@
-const CACHE = 'border-planner-v17';
+const CACHE = 'border-planner-v18';
 const FILES = ['./', 'index.html', 'app.js', 'garden-map.js', 'geometry.js', 'store.js', 'style.css', 'manifest.webmanifest', 'icon.svg'];
 
 self.addEventListener('install', e => {
@@ -14,8 +14,11 @@ self.addEventListener('activate', e => {
 // Network first so updates show up; fall back to cache when offline.
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  const request = new URL(e.request.url).origin === self.location.origin
+    ? new Request(e.request, { cache: 'reload' })
+    : e.request;
   e.respondWith(
-    fetch(e.request).then(res => {
+    fetch(request).then(res => {
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(e.request, copy));
       return res;
