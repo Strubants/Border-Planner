@@ -27,6 +27,12 @@ function gardenPlanning(garden) {
   return garden.planning;
 }
 
+function setToolsOpen(workspace, toolsToggle, open) {
+  workspace.classList.toggle('garden-tools-open', open);
+  toolsToggle.setAttribute('aria-expanded', String(open));
+  toolsToggle.textContent = open ? 'Hide tools' : 'Tools';
+}
+
 function parcelBounds(garden) {
   const points = garden.parcel.polygons.flat(2);
   return {
@@ -96,6 +102,8 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     <div class="garden-workspace">
       <section class="garden-map-stage" aria-label="Garden map workspace">
         <div class="garden-map-controls">
+          <button class="btn alt garden-mobile-exit" type="button" id="garden-exit" aria-label="Back to app">‹</button>
+          <button class="btn alt garden-mobile-tools" type="button" id="garden-toggle-tools" aria-expanded="false">Tools</button>
           <div class="garden-view-switch" role="group" aria-label="Map style">
             <button type="button" class="on" data-garden-view="satellite" aria-pressed="true">Satellite</button>
             <button type="button" data-garden-view="lines" aria-pressed="false">Clean lines</button>
@@ -173,6 +181,8 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   const imageAreaStatus = container.querySelector('#garden-image-area-status');
   const perimeterStatus = container.querySelector('#garden-perimeter-status');
   const officialParcelInput = container.querySelector('#garden-show-official-parcel');
+  const workspace = container.querySelector('.garden-workspace');
+  const toolsToggle = container.querySelector('#garden-toggle-tools');
   const view = { x: 0, y: 0, w: 1, h: 1 };
   let initialFrame;
   const state = {
@@ -571,6 +581,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       return;
     }
     state.mode = 'place';
+    setToolsOpen(workspace, toolsToggle, false);
     svg.classList.add('placing');
     status.textContent = 'Tap to place the border. Drag the map to pan and pinch to zoom.';
   }
@@ -621,6 +632,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     state.editingKind = null;
     state.selectedVertex = -1;
     state.shapeDraft = { kind, points: [] };
+    setToolsOpen(workspace, toolsToggle, false);
     svg.classList.add('placing');
     status.textContent = `Tap to add points. Drag the map to pan and pinch to zoom while drawing your ${shapeLabel(kind)}.`;
     updateOutlineControls();
@@ -636,6 +648,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       return;
     }
     state.mode = 'edit-outline';
+    setToolsOpen(workspace, toolsToggle, false);
     state.editingKind = kind;
     state.editSnapshot = points.map(point => ({ ...point }));
     state.selectedVertex = -1;
@@ -949,6 +962,10 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     onChange();
   };
   container.querySelector('#garden-fit').onclick = fitGarden;
+  container.querySelector('#garden-exit').onclick = () => {
+    document.querySelector('#nav [data-nav="list"]')?.click();
+  };
+  toolsToggle.onclick = () => setToolsOpen(workspace, toolsToggle, !workspace.classList.contains('garden-tools-open'));
   container.querySelector('#garden-zoom-in').onclick = () => zoomAt(1 / 1.4);
   container.querySelector('#garden-zoom-out').onclick = () => zoomAt(1.4);
   container.querySelector('#garden-place-border').onclick = beginPlacement;
