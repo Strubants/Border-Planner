@@ -1,5 +1,5 @@
-const CACHE = 'border-planner-v6';
-const FILES = ['./', 'index.html', 'app.js', 'geometry.js', 'store.js', 'style.css', 'manifest.webmanifest', 'icon.svg'];
+const CACHE = 'border-planner-v7';
+const FILES = ['./', 'index.html', 'app.js', 'garden-map.js', 'geometry.js', 'store.js', 'style.css', 'manifest.webmanifest', 'icon.svg'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)));

@@ -2,7 +2,9 @@
 // Data model (JSON, kept platform-neutral so a native app can reuse it):
 // { version, plants:[{ id, name, color:'#rrggbb', bloomFrom:1-12|0, bloomTo:1-12|0, water, sun, notes }],
 //   borders: [{ id, name, photo, points:[{x,y}], zones:[{ id, name, points, plants:[
-//   { id, plantId (-> plants[].id), planted:'YYYY-MM-DD', note }] }] }] }
+//   { id, plantId (-> plants[].id), planted:'YYYY-MM-DD', note }] }] }],
+//   garden: { address, location, parcel, planning: { layer, showBuildings,
+//   placements:[{id,borderId,x,y,scale,rotation}], referencePoints:[{id,name,x,y}] } } | null }
 
 const DB_NAME = 'borderplanner';
 const STORE = 'kv';
