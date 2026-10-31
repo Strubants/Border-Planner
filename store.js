@@ -3,9 +3,9 @@
 // { version, plants:[{ id, name, color:'#rrggbb', bloomFrom:1-12|0, bloomTo:1-12|0, water, sun, notes }],
 //   borders: [{ id, name, photo, points:[{x,y}], zones:[{ id, name, points, plants:[
 //   { id, plantId (-> plants[].id), planted:'YYYY-MM-DD', note }] }] }],
-//   garden: { address, location, parcel, planning: { showGrid, snapToGrid, mapMargin: 5|10|20,
-//   gardenBoundary:[{x,y}]|null, placements:[{id,borderId,x,y,scale,rotation}],
-//   referencePoints:[{id,name,x,y}] } } | null }
+//   gardens:[{ id, address, location, parcel, planning: { viewMode, showGrid, snapToGrid,
+//   imageBoundary:[{x,y}]|null, gardenBoundary:[{x,y}]|null, showOfficialParcel,
+//   placements:[{id,borderId,x,y,rotation}] } }], activeGardenId, garden:<active garden>|null }
 
 const DB_NAME = 'borderplanner';
 const STORE = 'kv';

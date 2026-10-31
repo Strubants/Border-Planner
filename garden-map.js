@@ -1,6 +1,7 @@
 import { uid } from './store.js';
 
 const ORTHO_URL = 'https://geo.api.vlaanderen.be/OFW/wmts';
+const WFS_URL = 'https://geo.api.vlaanderen.be/GRB/wfs';
 const TILE_ORIGIN_X = 9928;
 const TILE_ORIGIN_Y = 329072;
 const TILE_SIZE = 256;
@@ -18,10 +19,11 @@ function gardenPlanning(garden) {
   garden.planning ??= {};
   garden.planning.showGrid ??= false;
   garden.planning.snapToGrid ??= false;
-  garden.planning.mapMargin ??= 5;
+  if (!['satellite', 'lines'].includes(garden.planning.viewMode)) garden.planning.viewMode = 'satellite';
   garden.planning.placements ??= [];
-  garden.planning.referencePoints ??= [];
+  garden.planning.imageBoundary ??= null;
   garden.planning.gardenBoundary ??= null;
+  garden.planning.showOfficialParcel ??= false;
   return garden.planning;
 }
 
@@ -35,72 +37,128 @@ function parcelBounds(garden) {
   };
 }
 
+function geometryPath(geometry) {
+  if (!geometry) return '';
+  const polygons = geometry.type === 'Polygon' ? [geometry.coordinates]
+    : geometry.type === 'MultiPolygon' ? geometry.coordinates : [];
+  return polygons.flatMap(rings => rings).map(ring => {
+    if (!Array.isArray(ring) || !ring.length) return '';
+    return `M${ring.map(point => `${point[0]},${-point[1]}`).join('L')}Z`;
+  }).join('');
+}
+
+function containsPoint(ring, x, y) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function featureInsideParcel(geometry, parcelPolygons) {
+  const polygons = geometry?.type === 'Polygon' ? [geometry.coordinates]
+    : geometry?.type === 'MultiPolygon' ? geometry.coordinates : [];
+  return polygons.some(rings => {
+    const points = rings[0] || [];
+    if (!points.length) return false;
+    const x = (Math.min(...points.map(point => point[0])) + Math.max(...points.map(point => point[0]))) / 2;
+    const y = (Math.min(...points.map(point => point[1])) + Math.max(...points.map(point => point[1]))) / 2;
+    return parcelPolygons.some(parcelRings => parcelRings.length &&
+      containsPoint(parcelRings[0], x, y) && !parcelRings.slice(1).some(ring => containsPoint(ring, x, y)));
+  });
+}
+
 export function mountGardenMap(container, garden, { borders, plants, onChange }) {
   const planning = gardenPlanning(garden);
   const bounds = parcelBounds(garden);
+  const maskId = `garden-mask-${uid()}`;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.classList.add('garden-map');
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', 'Interactive garden map. Drag to move the map; use the mouse wheel to zoom.');
-  const [tileLayer, parcelLayer, borderLayer, pointLayer] = ['tiles', 'parcel', 'borders', 'points']
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  const parcelMask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
+  parcelMask.id = maskId;
+  parcelMask.setAttribute('maskUnits', 'userSpaceOnUse');
+  parcelMask.setAttribute('mask-type', 'luminance');
+  defs.append(parcelMask);
+  const [tileLayer, parcelLayer, imageBoundaryLayer, gardenBoundaryLayer, buildingLayer, borderLayer] =
+    ['tiles', 'parcel', 'image-boundary', 'garden-boundary', 'buildings', 'borders']
     .map(name => {
       const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
       group.dataset.layer = name;
       return group;
     });
-  svg.append(tileLayer, parcelLayer, borderLayer, pointLayer);
+  tileLayer.setAttribute('mask', `url(#${maskId})`);
+  svg.append(defs, tileLayer, parcelLayer, imageBoundaryLayer, gardenBoundaryLayer, buildingLayer, borderLayer);
   container.innerHTML = `
-    <div class="garden-map-controls">
-      <label class="garden-margin-label">Minimum margin
-        <select id="garden-map-margin">
-          <option value="5">5 m</option>
-          <option value="10">10 m</option>
-          <option value="20">20 m</option>
-        </select>
-      </label>
-      <button class="btn alt" type="button" id="garden-fit">Fit parcel</button>
-      <label class="garden-map-toggle"><input type="checkbox" id="garden-grid"><span id="garden-grid-label">Distance grid</span></label>
-      <label class="garden-map-toggle"><input type="checkbox" id="garden-snap-grid"> Snap to grid</label>
-      <span class="garden-zoom-controls"><button type="button" id="garden-zoom-out" aria-label="Zoom out">−</button><button type="button" id="garden-zoom-in" aria-label="Zoom in">+</button></span>
+    <div class="garden-workspace">
+      <section class="garden-map-stage" aria-label="Garden map workspace">
+        <div class="garden-map-controls">
+          <div class="garden-view-switch" role="group" aria-label="Map style">
+            <button type="button" class="on" data-garden-view="satellite" aria-pressed="true">Satellite</button>
+            <button type="button" data-garden-view="lines" aria-pressed="false">Clean lines</button>
+          </div>
+          <button class="btn alt" type="button" id="garden-fit">Fit garden</button>
+          <label class="garden-map-toggle" id="garden-grid-control"><input type="checkbox" id="garden-grid"><span id="garden-grid-label">Distance grid</span></label>
+          <label class="garden-map-toggle" id="garden-snap-control"><input type="checkbox" id="garden-snap-grid"> Snap to grid</label>
+          <span class="garden-zoom-controls"><button type="button" id="garden-zoom-out" aria-label="Zoom out">−</button><button type="button" id="garden-zoom-in" aria-label="Zoom in">+</button></span>
+        </div>
+        <div class="garden-map-wrap"><div class="garden-map-status" id="garden-map-status" role="status" aria-live="polite"></div></div>
+        <div class="garden-map-legend">
+          <span class="legend-official-parcel"><i class="garden-parcel-key"></i>Official parcel</span>
+          <span class="legend-image-boundary"><i class="garden-image-boundary-key"></i>Image area</span>
+          <span class="legend-garden-boundary"><i class="garden-boundary-key"></i>Garden edge</span>
+          <span><i class="garden-house-key"></i>House</span>
+          <span><i class="garden-border-key"></i>Placed borders</span>
+        </div>
+      </section>
+      <aside class="garden-tools-panel" aria-label="Garden drawing tools">
+        <details class="garden-tool-section" open>
+          <summary><span>1</span> Satellite image area</summary>
+          <p>Draw the area to keep in view. Satellite imagery outside it is hidden.</p>
+          <div class="garden-tool-actions">
+            <button class="btn alt" type="button" id="garden-draw-image-area">Draw image area</button>
+            <button class="btn alt" type="button" id="garden-edit-image-area">Edit points</button>
+            <button class="btn" type="button" id="garden-finish-image-area" hidden>Save area</button>
+            <button class="btn alt" type="button" id="garden-undo-image-area" hidden>Undo point</button>
+            <button class="btn alt" type="button" id="garden-remove-image-point" hidden disabled>Remove selected point</button>
+            <button class="btn" type="button" id="garden-done-edit-image-area" hidden>Done editing</button>
+            <button class="btn alt" type="button" id="garden-cancel-image-area" hidden>Cancel</button>
+            <button class="btn alt" type="button" id="garden-reset-image-area" hidden>Use official parcel</button>
+          </div>
+          <p class="garden-tool-hint" id="garden-image-area-status"></p>
+        </details>
+        <details class="garden-tool-section" open>
+          <summary><span>2</span> Garden perimeter</summary>
+          <p>Trace the outer edge over your fences or hedges. Drag points to adjust; click a line to add a point.</p>
+          <div class="garden-tool-actions">
+            <button class="btn alt" type="button" id="garden-draw-perimeter">Draw perimeter</button>
+            <button class="btn alt" type="button" id="garden-edit-perimeter">Edit points</button>
+            <button class="btn" type="button" id="garden-finish-perimeter" hidden>Save perimeter</button>
+            <button class="btn alt" type="button" id="garden-undo-perimeter" hidden>Undo point</button>
+            <button class="btn alt" type="button" id="garden-remove-perimeter-point" hidden disabled>Remove selected point</button>
+            <button class="btn" type="button" id="garden-done-edit-perimeter" hidden>Done editing</button>
+            <button class="btn alt" type="button" id="garden-cancel-perimeter" hidden>Cancel</button>
+            <button class="btn alt" type="button" id="garden-clear-perimeter" hidden>Clear perimeter</button>
+          </div>
+          <label class="garden-parcel-toggle"><input type="checkbox" id="garden-show-official-parcel"> Show official parcel in Clean Lines</label>
+          <p class="garden-tool-hint" id="garden-perimeter-status"></p>
+        </details>
+        <details class="garden-tool-section" open>
+          <summary><span>3</span> Place saved borders</summary>
+          <p>Choose a border, then place it at its measured size. Drag it to move and use the slider to rotate.</p>
+          <div class="garden-tool-actions garden-place-row">
+            <select id="garden-border-select" aria-label="Border to place"></select>
+            <button class="btn" type="button" id="garden-place-border">Place</button>
+          </div>
+          <div id="garden-placements"></div>
+        </details>
+        <p class="garden-attribution">Aerial imagery: <a href="https://metadata.vlaanderen.be/srv/api/records/50134be3-f0cd-47c5-8f6e-4a0936287947" target="_blank" rel="noreferrer">Digitaal Vlaanderen orthophoto service</a>. House outlines: Digitaal Vlaanderen GRB.</p>
+      </aside>
     </div>
-    <div class="garden-map-wrap"><div class="garden-map-status" id="garden-map-status" role="status" aria-live="polite"></div></div>
-    <div class="garden-map-legend">
-      <span><i class="garden-parcel-key"></i>Your parcel</span>
-      <span><i class="garden-boundary-key"></i>Your garden outline</span>
-      <span><i class="garden-border-key"></i>Placed borders</span>
-    </div>
-    <p class="muted">Aerial imagery is for visual reference; the parcel line is administrative data and may not match your actual garden boundary.</p>
-    <div class="garden-boundary-tools">
-      <h3>Garden outline</h3>
-      <p class="muted">The parcel can include more than your garden. Draw your actual usable garden boundary to make this overview your own.</p>
-      <div class="row">
-        <button class="btn alt" type="button" id="garden-draw-boundary">Draw / redraw outline</button>
-        <button class="btn" type="button" id="garden-finish-boundary" hidden>Finish outline</button>
-        <button class="btn alt" type="button" id="garden-undo-boundary" hidden>Undo point</button>
-        <button class="btn alt" type="button" id="garden-cancel-boundary" hidden>Cancel</button>
-        <button class="btn alt" type="button" id="garden-remove-boundary" hidden>Remove outline</button>
-      </div>
-      <p id="garden-boundary-status" class="muted"></p>
-    </div>
-    <div class="garden-border-tools">
-      <h3>Place borders</h3>
-      <p class="muted">Choose a saved border, then tap the map to place it. Drag a placed border to move it. Scale 1× preserves its measured dimensions.</p>
-      <div class="row">
-        <select id="garden-border-select" aria-label="Border to place"></select>
-        <button class="btn" type="button" id="garden-place-border">Place border</button>
-      </div>
-      <div id="garden-placements"></div>
-    </div>
-    <div class="garden-reference-tools">
-      <h3>My reference points</h3>
-      <p class="muted">Add a point for a patio corner, tree, gate, or another feature. Tap the map to mark its approximate location.</p>
-      <div class="row">
-        <input type="text" id="garden-reference-name" maxlength="60" placeholder="e.g. Patio corner" aria-label="Reference point name">
-        <button class="btn alt" type="button" id="garden-add-reference">Add point</button>
-      </div>
-      <div id="garden-reference-list"></div>
-    </div>
-    <p class="garden-attribution">Aerial imagery: <a href="https://metadata.vlaanderen.be/srv/api/records/50134be3-f0cd-47c5-8f6e-4a0936287947" target="_blank" rel="noreferrer">Digitaal Vlaanderen orthophoto service</a>.</p>`;
+  `;
   const mapWrap = container.querySelector('.garden-map-wrap');
   mapWrap.append(svg);
 
@@ -109,24 +167,55 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     status.textContent = 'Aerial imagery could not be loaded. Check your connection and try again.';
   }, true);
   const placementsList = container.querySelector('#garden-placements');
-  const referencesList = container.querySelector('#garden-reference-list');
-  const marginInput = container.querySelector('#garden-map-margin');
   const gridInput = container.querySelector('#garden-grid');
   const snapGridInput = container.querySelector('#garden-snap-grid');
-  const boundaryStatus = container.querySelector('#garden-boundary-status');
   const borderSelect = container.querySelector('#garden-border-select');
-  const refNameInput = container.querySelector('#garden-reference-name');
+  const imageAreaStatus = container.querySelector('#garden-image-area-status');
+  const perimeterStatus = container.querySelector('#garden-perimeter-status');
+  const officialParcelInput = container.querySelector('#garden-show-official-parcel');
   const view = { x: 0, y: 0, w: 1, h: 1 };
   let initialFrame;
   const state = {
     mode: 'pan',
     selectedPlacement: null,
     gesture: null,
-    boundaryDraft: null,
+    shapeDraft: null,
+    editingKind: null,
+    editSnapshot: null,
+    selectedVertex: -1,
     tileKey: '',
+    featureMarkup: '',
+    featureController: null,
+    featureSequence: 0,
     resizeObserver: null,
     hasFitted: false,
   };
+
+  function outlinePoints(kind) {
+    if (state.shapeDraft?.kind === kind) return state.shapeDraft.points;
+    return kind === 'image' ? planning.imageBoundary : planning.gardenBoundary;
+  }
+
+  function imageRings() {
+    const draft = state.shapeDraft?.kind === 'image' ? state.shapeDraft.points : null;
+    const points = draft?.length >= 3 ? draft : planning.imageBoundary;
+    return points?.length >= 3
+      ? [[points.map(point => [point.x, point.y])]]
+      : garden.parcel.polygons;
+  }
+
+  function activeAreaBounds() {
+    const points = outlinePoints('image');
+    if (points?.length >= 3) {
+      return {
+        minX: Math.min(...points.map(point => point.x)),
+        maxX: Math.max(...points.map(point => point.x)),
+        minY: Math.min(...points.map(point => point.y)),
+        maxY: Math.max(...points.map(point => point.y)),
+      };
+    }
+    return bounds;
+  }
 
   const resizeView = () => {
     const rect = svg.getBoundingClientRect();
@@ -134,16 +223,17 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     view.h = view.w * rect.height / rect.width;
   };
 
-  function fitParcel() {
+  function fitGarden() {
     const rect = svg.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const margin = Number(marginInput.value);
-    const width = Math.max(bounds.maxX - bounds.minX + margin * 2, 10);
-    const height = Math.max(bounds.maxY - bounds.minY + margin * 2, 10);
+    const margin = 5;
+    const footprint = activeAreaBounds();
+    const width = Math.max(footprint.maxX - footprint.minX + margin * 2, 10);
+    const height = Math.max(footprint.maxY - footprint.minY + margin * 2, 10);
     view.w = Math.max(width, height * rect.width / rect.height);
     view.h = view.w * rect.height / rect.width;
-    view.x = (bounds.minX + bounds.maxX) / 2 - view.w / 2;
-    view.y = -(bounds.minY + bounds.maxY) / 2 - view.h / 2;
+    view.x = (footprint.minX + footprint.maxX) / 2 - view.w / 2;
+    view.y = -(footprint.minY + footprint.maxY) / 2 - view.h / 2;
     state.hasFitted = true;
     draw();
   }
@@ -203,19 +293,46 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     resizeView();
     svg.setAttribute('viewBox', `${view.x} ${view.y} ${view.w} ${view.h}`);
     const stroke = Math.max(view.w * 0.002, 0.15);
+    const satelliteView = planning.viewMode !== 'lines';
+    svg.classList.toggle('line-view', !satelliteView);
+    mapWrap.classList.toggle('line-view', !satelliteView);
+    container.querySelector('#garden-grid-control').hidden = !satelliteView;
+    container.querySelector('#garden-snap-control').hidden = !satelliteView;
+    tileLayer.style.display = satelliteView ? '' : 'none';
+    buildingLayer.innerHTML = satelliteView ? '' : state.featureMarkup;
     container.querySelector('#garden-grid-label').textContent = `Distance grid (${gridStep()} m)`;
-    const tiles = tileImages();
-    if (tiles.key !== state.tileKey) {
-      tileLayer.innerHTML = tiles.markup;
-      state.tileKey = tiles.key;
+    if (satelliteView) {
+      const tiles = tileImages();
+      if (tiles.key !== state.tileKey) {
+        tileLayer.innerHTML = tiles.markup;
+        state.tileKey = tiles.key;
+      }
+    } else {
+      tileLayer.replaceChildren();
+      state.tileKey = '';
     }
-    const polygons = garden.parcel.polygons.map(rings => rings.map(ring =>
+    const parcelPolygons = garden.parcel.polygons.map(rings => rings.map(ring =>
       `M${ring.map(([x, y]) => `${x},${-y}`).join('L')}Z`).join('')).join('');
-    const gridPath = planning.showGrid ? gridMarkup(stroke) : '';
-    parcelLayer.innerHTML = `<path d="${polygons}" class="garden-parcel-casing" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>
-      <path d="${polygons}" class="garden-parcel-outline" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>
-      ${gridPath}
-      ${gardenBoundaryMarkup(stroke)}`;
+    const activeRings = imageRings();
+    const imageryBoundary = activeRings.map(rings => rings.map(ring =>
+      `M${ring.map(([x, y]) => `${x},${-y}`).join('L')}Z`).join('')).join('');
+    parcelMask.setAttribute('x', String(view.x));
+    parcelMask.setAttribute('y', String(view.y));
+    parcelMask.setAttribute('width', String(view.w));
+    parcelMask.setAttribute('height', String(view.h));
+    parcelMask.innerHTML = `<rect x="${view.x}" y="${view.y}" width="${view.w}" height="${view.h}" fill="black"/>
+      <path d="${imageryBoundary}" fill="white" fill-rule="evenodd"/>
+      <path d="${imageryBoundary}" fill="none" stroke="white" stroke-width="10" stroke-linejoin="round"/>`;
+    const gridPath = satelliteView && planning.showGrid ? gridMarkup(stroke) : '';
+    const showOfficialParcel = satelliteView || planning.showOfficialParcel;
+    parcelLayer.innerHTML = showOfficialParcel
+      ? `<path d="${parcelPolygons}" class="garden-parcel-casing" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>
+        <path d="${parcelPolygons}" class="garden-parcel-outline" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>`
+      : '';
+    imageBoundaryLayer.innerHTML = satelliteView ? outlineMarkup('image', stroke) : '';
+    gardenBoundaryLayer.innerHTML = outlineMarkup('garden', stroke);
+    container.querySelector('.legend-official-parcel').hidden = !showOfficialParcel;
+    container.querySelector('.legend-image-boundary').hidden = !satelliteView;
 
     let markup = '';
     for (const placement of planning.placements) {
@@ -231,17 +348,20 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         return `<path d="${path}" fill="${esc(color)}" fill-opacity=".68" stroke="#42543c" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`;
       }).join('');
       const outline = `${border.points.map((point, index) => `${index ? 'L' : 'M'}${point.x},${point.y}`).join('')}Z`;
-      markup += `<g data-placement="${esc(placement.id)}" transform="translate(${placement.x},${-placement.y}) rotate(${placement.rotation || 0}) scale(${placement.scale / 100}) translate(${-centerX},${-centerY})" class="garden-placed-border${selected ? ' selected' : ''}">
+      const labelFontSize = 14 * view.w / svg.clientWidth;
+      const labelHeight = 20 * view.w / svg.clientWidth;
+      const labelWidth = (border.name.length * 7.5 + 16) * view.w / svg.clientWidth;
+      const labelY = -placement.y - labelHeight - 8 * view.w / svg.clientWidth;
+      markup += `<g data-placement="${esc(placement.id)}" transform="translate(${placement.x},${-placement.y}) rotate(${placement.rotation || 0}) scale(0.01) translate(${-centerX},${-centerY})" class="garden-placed-border${selected ? ' selected' : ''}">
         ${zones}<path d="${outline}" fill="${selected ? '#e5a944' : '#f2d57c'}" fill-opacity=".35" stroke="${selected ? '#b54b19' : '#8a6122'}" stroke-width="3" vector-effect="non-scaling-stroke"/>
       </g>
-      <text x="${placement.x}" y="${-placement.y - stroke * 3}" class="garden-border-label" font-size="${Math.max(view.w * 0.018, 0.8)}">${esc(border.name)}</text>`;
+      <g class="garden-border-label" pointer-events="none">
+        <rect x="${placement.x - labelWidth / 2}" y="${labelY}" width="${labelWidth}" height="${labelHeight}" rx="${labelHeight / 2}" vector-effect="non-scaling-stroke"/>
+        <text x="${placement.x}" y="${labelY + labelHeight * 0.68}" font-size="${labelFontSize}">${esc(border.name)}</text>
+      </g>`;
     }
 
     borderLayer.innerHTML = markup;
-    pointLayer.innerHTML = planning.referencePoints.map(point => `<g class="garden-custom-point" data-reference="${esc(point.id)}">
-        <circle cx="${point.x}" cy="${-point.y}" r="${stroke * 2.8}"/>
-        <text x="${point.x + stroke * 3.2}" y="${-point.y - stroke * 2}" font-size="${Math.max(view.w * 0.018, 0.8)}">${esc(point.name)}</text>
-      </g>`).join('');
   }
 
   function gridStep() {
@@ -262,18 +382,25 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     return `<path d="${lines.join('')}" class="garden-grid" stroke-width="${stroke * 0.7}" vector-effect="non-scaling-stroke"/>`;
   }
 
-  function gardenBoundaryMarkup(stroke) {
-    const boundary = state.boundaryDraft ?? planning.gardenBoundary;
-    if (!boundary?.length) return '';
-    const closed = state.boundaryDraft === null && boundary.length >= 3;
-    const points = boundary.map(point => `${point.x},${-point.y}`).join(' ');
-    const shape = closed
-      ? `<polygon points="${points}" class="garden-boundary" stroke-width="${stroke * 2}" vector-effect="non-scaling-stroke"/>`
-      : `<polyline points="${points}" class="garden-boundary-draft" stroke-width="${stroke * 2}" vector-effect="non-scaling-stroke"/>`;
-    const handles = state.boundaryDraft
-      ? boundary.map(point => `<circle cx="${point.x}" cy="${-point.y}" r="${stroke * 2.2}" class="garden-boundary-handle"/>`).join('')
+  function outlineMarkup(kind, stroke) {
+    const points = outlinePoints(kind);
+    if (!points?.length) return '';
+    const isDraft = state.shapeDraft?.kind === kind;
+    const editable = isDraft || state.editingKind === kind;
+    const pointList = points.map(point => `${point.x},${-point.y}`).join(' ');
+    const className = kind === 'image' ? 'garden-image-boundary' : 'garden-boundary';
+    const closed = points.length >= 3;
+    const shapeClass = `${className}${isDraft ? ' garden-outline-draft' : ''}`;
+    const path = closed
+      ? `<polygon points="${pointList}" class="${shapeClass}" stroke-width="${stroke * 2}" vector-effect="non-scaling-stroke"/>`
+      : `<polyline points="${pointList}" class="${shapeClass} garden-outline-draft" stroke-width="${stroke * 2}" vector-effect="non-scaling-stroke"/>`;
+    const handles = editable
+      ? points.map((point, index) => {
+        const selected = index === state.selectedVertex && state.editingKind === kind;
+        return `<circle cx="${point.x}" cy="${-point.y}" r="${stroke * 3}" class="garden-outline-handle garden-outline-handle-${kind}${selected ? ' selected' : ''}" data-outline-vertex="${kind}:${index}" vector-effect="non-scaling-stroke"/>`;
+      }).join('')
       : '';
-    return shape + handles;
+    return path + handles;
   }
 
   function dataPlantColor(entry) {
@@ -282,9 +409,9 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
 
   const dataPlants = plants;
 
-  function mapPoint(event) {
+  function mapPoint(event, allowSnap = true) {
     const point = pointAt(event);
-    if (!planning.snapToGrid) return point;
+    if (!allowSnap || planning.viewMode === 'lines' || !planning.snapToGrid) return point;
     const step = gridStep();
     return { x: Math.round(point.x / step) * step, y: Math.round(point.y / step) * step };
   }
@@ -303,27 +430,30 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       name.className = 'garden-placement-name';
       name.textContent = border.name;
       name.onclick = () => { state.selectedPlacement = placement.id; renderPlacementControls(); draw(); };
-      const scaleLabel = document.createElement('label');
-      scaleLabel.textContent = `Scale ${placement.scale.toFixed(2)}×`;
-      const scale = document.createElement('input');
-      scale.type = 'range'; scale.min = '0.25'; scale.max = '4'; scale.step = '0.05'; scale.value = String(placement.scale);
-      scale.setAttribute('aria-label', `${border.name} scale`);
-      scale.oninput = () => {
-        placement.scale = Number(scale.value);
-        scaleLabel.textContent = `Scale ${placement.scale.toFixed(2)}×`;
-        draw(); onChange();
-      };
-      const rotationLabel = document.createElement('label');
-      rotationLabel.textContent = 'Rotation';
       const rotation = document.createElement('input');
-      rotation.type = 'number'; rotation.min = '-180'; rotation.max = '180'; rotation.step = '5'; rotation.value = String(placement.rotation || 0);
+      rotation.type = 'range'; rotation.min = '-180'; rotation.max = '180'; rotation.step = '1'; rotation.value = String(placement.rotation || 0);
       rotation.setAttribute('aria-label', `${border.name} rotation in degrees`);
+      const rotationLabel = document.createElement('span');
+      rotationLabel.className = 'garden-rotation-value';
+      rotationLabel.textContent = `${Number(placement.rotation || 0)}°`;
       rotation.oninput = () => {
-        const value = Number(rotation.value);
-        if (!Number.isFinite(value)) return;
-        placement.rotation = Math.max(-180, Math.min(180, value));
+        placement.rotation = Number(rotation.value);
+        rotationLabel.textContent = `${placement.rotation}°`;
         draw(); onChange();
       };
+      const turnLeft = document.createElement('button');
+      turnLeft.type = 'button'; turnLeft.className = 'btn alt garden-turn'; turnLeft.textContent = '↶ 15°';
+      turnLeft.setAttribute('aria-label', `Rotate ${border.name} 15 degrees counterclockwise`);
+      const turnRight = document.createElement('button');
+      turnRight.type = 'button'; turnRight.className = 'btn alt garden-turn'; turnRight.textContent = '↷ 15°';
+      turnRight.setAttribute('aria-label', `Rotate ${border.name} 15 degrees clockwise`);
+      const rotateBy = degrees => {
+        const current = Number(placement.rotation);
+        rotation.value = String(Math.max(-180, Math.min(180, (Number.isFinite(current) ? current : 0) + degrees)));
+        rotation.dispatchEvent(new Event('input'));
+      };
+      turnLeft.onclick = () => rotateBy(-15);
+      turnRight.onclick = () => rotateBy(15);
       const remove = document.createElement('button');
       remove.type = 'button'; remove.className = 'btn alt'; remove.textContent = 'Remove';
       remove.onclick = () => {
@@ -331,37 +461,16 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         if (state.selectedPlacement === placement.id) state.selectedPlacement = null;
         renderPlacementControls(); draw(); onChange();
       };
-      row.append(name, scaleLabel, scale, rotationLabel, rotation, remove);
+      const rotationControls = document.createElement('div');
+      rotationControls.className = 'garden-rotation-controls';
+      rotationControls.append(turnLeft, rotation, turnRight, rotationLabel);
+      row.append(name, rotationControls, remove);
       placementsList.append(row);
     }
     if (!planning.placements.length) {
       const hint = document.createElement('p');
       hint.className = 'muted'; hint.textContent = 'No borders placed on this map yet.';
       placementsList.append(hint);
-    }
-  }
-
-  function renderReferenceList() {
-    referencesList.replaceChildren();
-    for (const point of planning.referencePoints) {
-      const row = document.createElement('div');
-      row.className = 'garden-reference-row';
-      const name = document.createElement('span');
-      name.textContent = point.name;
-      const remove = document.createElement('button');
-      remove.type = 'button'; remove.className = 'btn alt'; remove.textContent = 'Remove';
-      remove.setAttribute('aria-label', `Remove reference point ${point.name}`);
-      remove.onclick = () => {
-        planning.referencePoints = planning.referencePoints.filter(item => item.id !== point.id);
-        renderReferenceList(); draw(); onChange();
-      };
-      row.append(name, remove);
-      referencesList.append(row);
-    }
-    if (!planning.referencePoints.length) {
-      const hint = document.createElement('p');
-      hint.className = 'muted'; hint.textContent = 'No custom reference points yet.';
-      referencesList.append(hint);
     }
   }
 
@@ -379,7 +488,50 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     container.querySelector('#garden-place-border').disabled = !available.length;
   }
 
+  async function loadBuildingFootprints() {
+    state.featureController?.abort();
+    const controller = new AbortController();
+    state.featureController = controller;
+    const sequence = ++state.featureSequence;
+    const url = new URL(WFS_URL);
+    url.search = new URLSearchParams({
+      service: 'WFS', version: '2.0.0', request: 'GetFeature',
+      typeNames: 'GRB:GBG', outputFormat: 'application/json',
+      srsName: 'EPSG:31370', count: '100',
+      bbox: (() => {
+        const footprint = activeAreaBounds();
+        return `${footprint.minX - 5},${footprint.minY - 5},${footprint.maxX + 5},${footprint.maxY + 5},EPSG:31370`;
+      })(),
+    });
+    status.textContent = 'Loading house outline…';
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`GRB returned HTTP ${response.status}.`);
+      const collection = await response.json();
+      if (sequence !== state.featureSequence) return;
+      if (!Array.isArray(collection.features)) throw new Error('GRB returned an invalid feature collection.');
+      const houseFeatures = collection.features.filter(feature =>
+        featureInsideParcel(feature.geometry, imageRings()));
+      state.featureMarkup = houseFeatures.map(feature => {
+        const path = geometryPath(feature.geometry);
+        return path ? `<path d="${path}" class="garden-building-feature"/>` : '';
+      }).join('');
+      draw();
+      status.textContent = houseFeatures.length
+        ? 'House and parcel outlines shown.'
+        : 'No house outline is available for this parcel.';
+    } catch (error) {
+      if (error.name !== 'AbortError' && sequence === state.featureSequence) {
+        status.textContent = `House outline unavailable: ${error.message}`;
+      }
+    }
+  }
+
   function beginPlacement() {
+    if (state.shapeDraft || state.editingKind) {
+      status.textContent = 'Save or cancel the current outline edit before placing a border.';
+      return;
+    }
     if (!borderSelect.value) {
       status.textContent = 'Select a saved border first.';
       return;
@@ -389,86 +541,223 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     status.textContent = 'Tap the map where this border should go.';
   }
 
-  function beginBoundary() {
+  function shapeStorageKey(kind) {
+    return kind === 'image' ? 'imageBoundary' : 'gardenBoundary';
+  }
+
+  function shapeLabel(kind) {
+    return kind === 'image' ? 'satellite image area' : 'garden perimeter';
+  }
+
+  function updateOutlineControls() {
+    for (const kind of ['image', 'garden']) {
+      const suffix = kind === 'image' ? 'image-area' : 'perimeter';
+      const drawing = state.shapeDraft?.kind === kind;
+      const editing = state.editingKind === kind;
+      const points = drawing ? state.shapeDraft.points : planning[shapeStorageKey(kind)];
+      const prefix = kind === 'image' ? 'garden' : 'garden';
+      container.querySelector(`#${prefix}-draw-${suffix === 'image-area' ? 'image-area' : 'perimeter'}`).hidden = drawing || editing;
+      container.querySelector(`#${kind === 'image' ? 'garden-edit-image-area' : 'garden-edit-perimeter'}`).hidden = drawing || editing || !planning[shapeStorageKey(kind)]?.length;
+      container.querySelector(`#garden-finish-${suffix}`).hidden = !drawing;
+      container.querySelector(`#garden-undo-${suffix}`).hidden = !drawing;
+      container.querySelector(`#garden-remove-${kind === 'image' ? 'image' : 'perimeter'}-point`).hidden = !editing;
+      container.querySelector(`#garden-remove-${kind === 'image' ? 'image' : 'perimeter'}-point`).disabled =
+        !editing || state.selectedVertex < 0 || !points || points.length <= 3;
+      container.querySelector(`#garden-done-edit-${kind === 'image' ? 'image-area' : 'perimeter'}`).hidden = !editing;
+      container.querySelector(`#garden-cancel-${suffix}`).hidden = !drawing && !editing;
+      const reset = container.querySelector(`#garden-${kind === 'image' ? 'reset-image-area' : 'clear-perimeter'}`);
+      reset.hidden = drawing || editing || !planning[shapeStorageKey(kind)]?.length;
+      container.querySelector(`#garden-finish-${suffix}`).disabled = (points?.length ?? 0) < 3;
+      container.querySelector(`#garden-undo-${suffix}`).disabled = !points?.length;
+      const text = kind === 'image'
+        ? planning.imageBoundary?.length ? 'Custom image area saved. Satellite imagery is clipped to it with a 5 m buffer.' : 'No image area drawn yet; the official parcel is shown until you draw one.'
+        : planning.gardenBoundary?.length ? 'Garden perimeter saved. Clean Lines uses your drawn edge.' : 'No garden perimeter yet. Draw around your fences or hedges to add your real garden edge.';
+      const hint = kind === 'image' ? imageAreaStatus : perimeterStatus;
+      hint.textContent = drawing
+        ? `${points.length} points. Add at least 3, then save the ${shapeLabel(kind)}.`
+        : editing ? 'Drag a point to move it. Click an edge to add a point; select a point to remove it.'
+          : text;
+    }
+  }
+
+  function startDrawing(kind) {
+    if (state.shapeDraft || state.editingKind) cancelOutline();
+    setViewMode('satellite');
     state.mode = 'boundary';
-    state.boundaryDraft = [];
+    state.editingKind = null;
+    state.selectedVertex = -1;
+    state.shapeDraft = { kind, points: [] };
     svg.classList.add('placing');
-    updateBoundaryControls();
-    status.textContent = 'Tap around the edge of your garden to draw a new outline.';
+    status.textContent = `Click around your ${shapeLabel(kind)}. Zoom and pan as needed.`;
+    updateOutlineControls();
     draw();
   }
 
-  function updateBoundaryControls() {
-    const drawing = state.boundaryDraft !== null;
-    container.querySelector('#garden-draw-boundary').hidden = drawing;
-    container.querySelector('#garden-finish-boundary').hidden = !drawing;
-    container.querySelector('#garden-undo-boundary').hidden = !drawing;
-    container.querySelector('#garden-cancel-boundary').hidden = !drawing;
-    container.querySelector('#garden-remove-boundary').hidden = drawing || !planning.gardenBoundary?.length;
-    container.querySelector('#garden-finish-boundary').disabled = (state.boundaryDraft?.length ?? 0) < 3;
-    container.querySelector('#garden-undo-boundary').disabled = !state.boundaryDraft?.length;
-    boundaryStatus.textContent = planning.gardenBoundary?.length
-      ? 'Custom garden outline saved. You can redraw it at any time.'
-      : 'No custom garden outline yet; the parcel outline is shown as a reference.';
-    if (drawing) boundaryStatus.textContent = `${state.boundaryDraft.length} points added. At least 3 are needed to finish.`;
-  }
-
-  function finishBoundary() {
-    if (!state.boundaryDraft || state.boundaryDraft.length < 3) return;
-    planning.gardenBoundary = state.boundaryDraft.map(point => ({ ...point }));
-    state.boundaryDraft = null;
-    state.mode = 'pan';
-    svg.classList.remove('placing');
-    updateBoundaryControls();
-    status.textContent = 'Garden outline saved.';
-    draw(); onChange();
-  }
-
-  function beginReference() {
-    const name = refNameInput.value.trim();
-    if (!name) {
-      refNameInput.focus();
-      status.textContent = 'Enter a name for your reference point first.';
+  function startEditing(kind) {
+    if (state.shapeDraft) cancelOutline();
+    if (state.editingKind && state.editingKind !== kind) finishEditing();
+    const points = planning[shapeStorageKey(kind)];
+    if (!points?.length) {
+      status.textContent = `Draw and save a ${shapeLabel(kind)} first.`;
       return;
     }
-    state.mode = 'reference';
-    svg.classList.add('placing');
-    status.textContent = 'Tap the map to add this reference point.';
+    state.mode = 'edit-outline';
+    state.editingKind = kind;
+    state.editSnapshot = points.map(point => ({ ...point }));
+    state.selectedVertex = -1;
+    setViewMode('satellite');
+    svg.classList.remove('placing');
+    status.textContent = 'Drag a point to reshape the outline. Click an edge to add a point.';
+    updateOutlineControls();
+    draw();
+  }
+
+  function setViewMode(mode) {
+    if (mode === 'lines' && state.shapeDraft) {
+      status.textContent = 'Save or cancel the outline before switching to Clean Lines.';
+      return;
+    }
+    if (mode === 'lines' && state.editingKind) finishEditing();
+    planning.viewMode = mode;
+    container.querySelectorAll('[data-garden-view]').forEach(button => {
+      const active = button.dataset.gardenView === mode;
+      button.classList.toggle('on', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    if (mode === 'lines') {
+      draw();
+      loadBuildingFootprints();
+    } else {
+      state.featureController?.abort();
+      state.featureMarkup = '';
+      state.featureSequence++;
+      status.textContent = '';
+      draw();
+    }
+    onChange();
+  }
+
+  function cancelOutline() {
+    if (state.editingKind && state.editSnapshot) {
+      planning[shapeStorageKey(state.editingKind)] = state.editSnapshot.map(point => ({ ...point }));
+      onChange();
+    }
+    state.shapeDraft = null;
+    state.editingKind = null;
+    state.editSnapshot = null;
+    state.selectedVertex = -1;
+    state.mode = 'pan';
+    svg.classList.remove('placing');
+    status.textContent = 'Outline editing canceled. Saved outlines are unchanged.';
+    updateOutlineControls();
+    draw();
+  }
+
+  function finishEditing() {
+    if (!state.editingKind) return;
+    state.editingKind = null;
+    state.editSnapshot = null;
+    state.selectedVertex = -1;
+    state.mode = 'pan';
+    updateOutlineControls();
+    draw();
+    status.textContent = 'Outline edits saved.';
+  }
+
+  function finishOutline(kind) {
+    if (state.shapeDraft?.kind !== kind || state.shapeDraft.points.length < 3) return;
+    planning[shapeStorageKey(kind)] = state.shapeDraft.points.map(point => ({ ...point }));
+    state.shapeDraft = null;
+    state.editingKind = null;
+    state.editSnapshot = null;
+    state.selectedVertex = -1;
+    state.mode = 'pan';
+    svg.classList.remove('placing');
+    updateOutlineControls();
+    status.textContent = `${kind === 'image' ? 'Satellite image area' : 'Garden perimeter'} saved.`;
+    if (kind === 'image') {
+      fitGarden();
+      if (planning.viewMode === 'lines') loadBuildingFootprints();
+    } else draw();
+    onChange();
+  }
+
+  function insertOutlinePoint(kind, point) {
+    const points = planning[shapeStorageKey(kind)];
+    if (!points || points.length < 3) return;
+    let bestIndex = -1;
+    let bestDistance = Infinity;
+    for (let index = 0; index < points.length; index++) {
+      const a = points[index], b = points[(index + 1) % points.length];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const lengthSquared = dx * dx + dy * dy;
+      const t = lengthSquared ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared)) : 0;
+      const x = a.x + t * dx, y = a.y + t * dy;
+      const distance = (point.x - x) ** 2 + (point.y - y) ** 2;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index + 1;
+      }
+    }
+    points.splice(bestIndex, 0, point);
+    state.selectedVertex = bestIndex;
+    updateOutlineControls();
+    draw();
+    onChange();
+  }
+
+  function removeSelectedOutlinePoint(kind) {
+    const points = planning[shapeStorageKey(kind)];
+    if (!points || points.length <= 3 || state.selectedVertex < 0) return;
+    points.splice(state.selectedVertex, 1);
+    state.selectedVertex = -1;
+    updateOutlineControls();
+    draw();
+    onChange();
   }
 
   function finishPlacement(event) {
     const point = mapPoint(event);
-    if (state.mode === 'place') {
-      const border = borders.find(item => item.id === borderSelect.value);
-      if (!border) return;
-      const id = uid();
-      planning.placements.push({ id, borderId: border.id, x: point.x, y: point.y, scale: 1, rotation: 0 });
-      state.selectedPlacement = id;
-      renderPlacementControls();
-      state.mode = 'pan'; svg.classList.remove('placing');
-      status.textContent = `${border.name} placed. Drag it to adjust its position.`;
-      draw(); onChange();
-    } else if (state.mode === 'reference') {
-      planning.referencePoints.push({
-        id: uid(),
-        name: refNameInput.value.trim(),
-        x: point.x,
-        y: point.y,
-      });
-      refNameInput.value = '';
-      renderReferenceList();
-      state.mode = 'pan'; svg.classList.remove('placing');
-      status.textContent = 'Reference point added.';
-      draw(); onChange();
-    }
+    const border = borders.find(item => item.id === borderSelect.value);
+    if (!border) return;
+    const id = uid();
+    planning.placements.push({ id, borderId: border.id, x: point.x, y: point.y, rotation: 0 });
+    state.selectedPlacement = id;
+    renderPlacementControls();
+    state.mode = 'pan'; svg.classList.remove('placing');
+    status.textContent = `${border.name} placed at its measured size. Drag it to adjust its position.`;
+    draw(); onChange();
   }
 
   svg.addEventListener('pointerdown', event => {
     if (event.button !== 0) return;
     svg.setPointerCapture(event.pointerId);
     const point = pointAt(event);
-    if (state.mode === 'place' || state.mode === 'reference' || state.mode === 'boundary') {
-      state.gesture = { type: 'add', mode: state.mode, start: point, clientX: event.clientX, clientY: event.clientY };
+    if (state.mode === 'place' || state.mode === 'boundary') {
+      state.gesture = {
+        type: 'add', mode: state.mode, kind: state.shapeDraft?.kind,
+        start: point, clientX: event.clientX, clientY: event.clientY,
+      };
+      return;
+    }
+    if (state.mode === 'edit-outline') {
+      const handle = event.target.closest?.('[data-outline-vertex]');
+      if (handle) {
+        const [kind, index] = handle.dataset.outlineVertex.split(':');
+        state.editingKind = kind;
+        state.selectedVertex = Number(index);
+        state.gesture = {
+          type: 'move-outline-point', kind, index: Number(index), startX: point.x, startY: point.y,
+          point: { ...planning[shapeStorageKey(kind)][Number(index)] },
+        };
+        updateOutlineControls();
+        draw();
+      } else {
+        state.gesture = {
+          type: 'add-outline-point', kind: state.editingKind,
+          clientX: event.clientX, clientY: event.clientY,
+        };
+      }
       return;
     }
     const target = event.target.closest?.('[data-placement]');
@@ -490,7 +779,16 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     const gesture = state.gesture;
     if (!gesture || !svg.hasPointerCapture(event.pointerId)) return;
     if (gesture.type === 'add') return;
-    if (gesture.type === 'move-border') {
+    if (gesture.type === 'move-outline-point') {
+      const point = pointAt(event);
+      const points = planning[shapeStorageKey(gesture.kind)];
+      const vertex = points?.[gesture.index];
+      if (vertex) {
+        vertex.x = gesture.point.x + point.x - gesture.startX;
+        vertex.y = gesture.point.y + point.y - gesture.startY;
+        draw();
+      }
+    } else if (gesture.type === 'move-border') {
       const point = pointAt(event);
       const placement = planning.placements.find(item => item.id === gesture.id);
       if (placement) {
@@ -507,18 +805,27 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   });
 
   const endGesture = event => {
-    if (!state.gesture || state.gesture.type === 'add' &&
-      !['place', 'reference', 'boundary'].includes(state.gesture.mode)) return;
+    if (!state.gesture) return;
     const gesture = state.gesture;
     state.gesture = null;
     if (gesture.type === 'add') {
       if (event.type === 'pointerup' && Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8) {
         if (gesture.mode === 'boundary') {
-          state.boundaryDraft.push(mapPoint(event));
-          updateBoundaryControls(); draw();
+          state.shapeDraft.points.push(mapPoint(event, false));
+          updateOutlineControls();
+          draw();
         } else {
           finishPlacement(event);
         }
+      }
+    } else if (gesture.type === 'add-outline-point') {
+      if (event.type === 'pointerup' && Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8) {
+        insertOutlinePoint(gesture.kind, mapPoint(event, false));
+      }
+    } else if (gesture.type === 'move-outline-point') {
+      if (event.type === 'pointerup') {
+        updateOutlineControls();
+        onChange();
       }
     } else if (gesture.type === 'move-border') {
       onChange();
@@ -540,12 +847,12 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     draw();
   }, { passive: false });
 
-  marginInput.value = String([5, 10, 20].includes(planning.mapMargin) ? planning.mapMargin : 5);
-  marginInput.onchange = () => {
-    planning.mapMargin = Number(marginInput.value);
-    fitParcel();
-    onChange();
-  };
+  container.querySelectorAll('[data-garden-view]').forEach(button => {
+    button.setAttribute('aria-pressed', String(button.dataset.gardenView === planning.viewMode));
+    button.classList.toggle('on', button.dataset.gardenView === planning.viewMode);
+    button.onclick = () => setViewMode(button.dataset.gardenView);
+  });
+
   gridInput.checked = planning.showGrid;
   gridInput.onchange = () => {
     planning.showGrid = gridInput.checked;
@@ -564,22 +871,50 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     }
     draw(); onChange();
   };
-  container.querySelector('#garden-fit').onclick = fitParcel;
+  officialParcelInput.checked = planning.showOfficialParcel;
+  officialParcelInput.onchange = () => {
+    planning.showOfficialParcel = officialParcelInput.checked;
+    draw();
+    onChange();
+  };
+  container.querySelector('#garden-fit').onclick = fitGarden;
   container.querySelector('#garden-zoom-in').onclick = () => zoomAt(1 / 1.4);
   container.querySelector('#garden-zoom-out').onclick = () => zoomAt(1.4);
   container.querySelector('#garden-place-border').onclick = beginPlacement;
-  container.querySelector('#garden-add-reference').onclick = beginReference;
-  container.querySelector('#garden-draw-boundary').onclick = beginBoundary;
-  container.querySelector('#garden-finish-boundary').onclick = finishBoundary;
-  container.querySelector('#garden-undo-boundary').onclick = () => {
-    state.boundaryDraft?.pop(); updateBoundaryControls(); draw();
+  container.querySelector('#garden-draw-image-area').onclick = () => startDrawing('image');
+  container.querySelector('#garden-draw-perimeter').onclick = () => startDrawing('garden');
+  container.querySelector('#garden-edit-image-area').onclick = () =>
+    state.editingKind === 'image' ? cancelOutline() : startEditing('image');
+  container.querySelector('#garden-edit-perimeter').onclick = () =>
+    state.editingKind === 'garden' ? cancelOutline() : startEditing('garden');
+  container.querySelector('#garden-finish-image-area').onclick = () => finishOutline('image');
+  container.querySelector('#garden-finish-perimeter').onclick = () => finishOutline('garden');
+  container.querySelector('#garden-undo-image-area').onclick = () => {
+    state.shapeDraft?.kind === 'image' && state.shapeDraft.points.pop();
+    updateOutlineControls(); draw();
   };
-  container.querySelector('#garden-cancel-boundary').onclick = () => {
-    state.boundaryDraft = null; state.mode = 'pan'; svg.classList.remove('placing'); updateBoundaryControls(); draw();
+  container.querySelector('#garden-undo-perimeter').onclick = () => {
+    state.shapeDraft?.kind === 'garden' && state.shapeDraft.points.pop();
+    updateOutlineControls(); draw();
   };
-  container.querySelector('#garden-remove-boundary').onclick = () => {
+  container.querySelector('#garden-remove-image-point').onclick = () => removeSelectedOutlinePoint('image');
+  container.querySelector('#garden-remove-perimeter-point').onclick = () => removeSelectedOutlinePoint('garden');
+  container.querySelector('#garden-done-edit-image-area').onclick = finishEditing;
+  container.querySelector('#garden-done-edit-perimeter').onclick = finishEditing;
+  container.querySelector('#garden-cancel-image-area').onclick = cancelOutline;
+  container.querySelector('#garden-cancel-perimeter').onclick = cancelOutline;
+  container.querySelector('#garden-reset-image-area').onclick = () => {
+    planning.imageBoundary = null;
+    updateOutlineControls();
+    fitGarden();
+    if (planning.viewMode === 'lines') loadBuildingFootprints();
+    onChange();
+  };
+  container.querySelector('#garden-clear-perimeter').onclick = () => {
     planning.gardenBoundary = null;
-    updateBoundaryControls(); draw(); onChange();
+    updateOutlineControls();
+    draw();
+    onChange();
   };
 
   function zoomAt(factor) {
@@ -597,7 +932,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     const rect = svg.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
     if (!state.hasFitted) {
-      fitParcel();
+      fitGarden();
       return;
     }
     const centerY = view.y + view.h / 2;
@@ -608,13 +943,14 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
 
   populateBorderSelect();
   renderPlacementControls();
-  renderReferenceList();
-  updateBoundaryControls();
+  updateOutlineControls();
   state.resizeObserver = new ResizeObserver(resizeMap);
   state.resizeObserver.observe(svg);
-  initialFrame = requestAnimationFrame(fitParcel);
+  initialFrame = requestAnimationFrame(fitGarden);
+  if (planning.viewMode === 'lines') loadBuildingFootprints();
   return () => {
     cancelAnimationFrame(initialFrame);
     state.resizeObserver.disconnect();
+    state.featureController?.abort();
   };
 }

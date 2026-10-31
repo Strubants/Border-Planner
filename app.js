@@ -44,6 +44,23 @@ function migrate(d) {
     d.garden = null;
     changed = true;
   }
+  if (!Array.isArray(d.gardens)) {
+    d.gardens = [];
+    changed = true;
+  }
+  if (d.garden) {
+    d.garden.id ??= uid();
+    let activeGarden = d.gardens.find(garden => garden.id === d.garden.id);
+    if (!activeGarden) {
+      activeGarden = d.garden;
+      d.gardens.push(activeGarden);
+      changed = true;
+    }
+    d.activeGardenId = activeGarden.id;
+    d.garden = activeGarden;
+  } else if (d.activeGardenId) {
+    d.garden = d.gardens.find(garden => garden.id === d.activeGardenId) || null;
+  }
   if (d.version !== 3) changed = true;
   d.version = 3;
   return changed;
@@ -144,27 +161,79 @@ function showGarden() {
   setNav('garden');
   setHeader('My Garden');
   main.innerHTML = `<div class="pad garden-page">
-    <p>Find your address to see its Flemish administrative parcel outline and address location.</p>
-    <label for="garden-address">Address in Flanders</label>
-    <div class="row garden-search">
-      <input type="text" id="garden-address" autocomplete="street-address" placeholder="Street, house number, postcode, municipality">
-      <button class="btn" id="garden-search" type="button">Search</button>
+    <div class="garden-address-bar">
+      <div class="garden-address-search">
+        <label for="garden-address">Garden address</label>
+        <div class="row garden-search">
+          <input type="text" id="garden-address" autocomplete="street-address" placeholder="Street, number, postcode, municipality">
+          <button class="btn" id="garden-search" type="button">Search</button>
+        </div>
+      </div>
+      <div class="garden-address-side">
+        <div id="garden-saved-addresses" class="garden-saved-addresses" hidden>
+          <label for="garden-address-select">Saved gardens</label>
+          <div class="row">
+            <select id="garden-address-select" aria-label="Select a saved garden"></select>
+            <button class="btn alt" id="garden-remove-address" type="button">Remove</button>
+          </div>
+        </div>
+        <div id="garden-status" class="muted" role="status" aria-live="polite"></div>
+      </div>
     </div>
-    <p class="muted">Address searches are sent to Digitaal Vlaanderen. Your selected address and parcel outline are saved on this device.</p>
-    <div id="garden-status" class="muted" role="status" aria-live="polite"></div>
     <div id="garden-suggestions"></div>
-    <div id="garden-result"></div>
+    <div id="garden-result" class="garden-result"></div>
   </div>`;
 
   const input = $('garden-address');
   const status = $('garden-status');
   const suggestions = $('garden-suggestions');
   const result = $('garden-result');
+  const savedAddresses = $('garden-saved-addresses');
+  const addressSelect = $('garden-address-select');
   let suggestionTimer;
   let suggestionSequence = 0;
   let suggestionController;
   let lookupSequence = 0;
   let lookupController;
+
+  function renderSavedAddresses() {
+    addressSelect.replaceChildren();
+    for (const savedGarden of data.gardens) {
+      const option = document.createElement('option');
+      option.value = savedGarden.id;
+      option.textContent = savedGarden.address;
+      option.selected = savedGarden.id === data.activeGardenId;
+      addressSelect.append(option);
+    }
+    savedAddresses.hidden = data.gardens.length < 2;
+  }
+
+  addressSelect.onchange = () => {
+    const garden = data.gardens.find(item => item.id === addressSelect.value);
+    if (!garden) return;
+    data.garden = garden;
+    data.activeGardenId = garden.id;
+    input.value = garden.address;
+    clearSuggestions();
+    status.textContent = 'Showing the saved parcel.';
+    renderSavedAddresses();
+    save();
+    renderGardenResult(result, garden);
+  };
+
+  $('garden-remove-address').onclick = async () => {
+    const garden = data.gardens.find(item => item.id === data.activeGardenId);
+    if (!garden || !await ask(`Remove ${garden.address} and its garden layout?`, 'Remove address')) return;
+    data.gardens = data.gardens.filter(item => item.id !== garden.id);
+    data.garden = data.gardens[0] || null;
+    data.activeGardenId = data.garden?.id || null;
+    input.value = data.garden?.address || '';
+    status.textContent = data.garden ? 'Showing the saved parcel.' : 'Search for an address, then select an individual house-number result.';
+    renderSavedAddresses();
+    save();
+    if (data.garden) renderGardenResult(result, data.garden);
+    else result.replaceChildren();
+  };
 
   const apiJson = async (url, controller) => {
     const response = await fetch(url, {
@@ -285,9 +354,10 @@ function showGarden() {
         ];
       }
       const garden = {
+        id: data.gardens.find(item => item.address.toLocaleLowerCase() === (location.FormattedAddress || address).toLocaleLowerCase())?.id || uid(),
         address: location.FormattedAddress || address,
         location: { x, y, type: location.LocationType || '' },
-        planning: data.garden?.address === (location.FormattedAddress || address) ? data.garden.planning : undefined,
+        planning: data.gardens.find(item => item.address.toLocaleLowerCase() === (location.FormattedAddress || address).toLocaleLowerCase())?.planning,
         parcel: {
           capakey: parcelResponse.capakey || '',
           municipalityName: parcelResponse.municipalityName || location.Municipality || '',
@@ -297,9 +367,16 @@ function showGarden() {
         },
       };
       if (sequence !== lookupSequence) return;
+      const savedGardenIndex = data.gardens.findIndex(item => item.id === garden.id);
+      if (savedGardenIndex < 0) data.gardens.push(garden);
+      else data.gardens[savedGardenIndex] = garden;
       data.garden = garden;
+      data.activeGardenId = garden.id;
       save();
-      status.textContent = 'Parcel found. Check the outline against your actual garden boundary.';
+      status.textContent = data.gardens.length > 1
+        ? 'Parcel saved. Choose any saved garden to switch locations.'
+        : 'Parcel found. Check the outline against your actual garden boundary.';
+      renderSavedAddresses();
       renderGardenResult(result, garden);
     } catch (error) {
       if (error.name !== 'AbortError' && sequence === lookupSequence) {
@@ -332,9 +409,10 @@ function showGarden() {
     lookupSequence++;
   };
 
+  renderSavedAddresses();
   if (data.garden) {
     input.value = data.garden.address;
-    status.textContent = 'Showing the saved parcel. Search for another address to replace it.';
+    status.textContent = 'Showing the saved parcel. Search for another address to add a garden.';
     renderGardenResult(result, data.garden);
   } else {
     status.textContent = 'Search for an address, then select an individual house-number result.';
@@ -356,10 +434,13 @@ function renderGardenResult(container, garden) {
   const safe = esc;
 
   container.innerHTML = `<section class="card garden-card">
-    <h2>${safe(garden.address)}</h2>
-    <p class="muted">${safe(garden.parcel.municipalityName)}${garden.parcel.capakey ? ` · Parcel ${safe(garden.parcel.capakey)}` : ''}${area ? ` · ${area.toFixed(0)} m²` : ''}</p>
+    <header class="garden-card-heading">
+      <div>
+        <h2>${safe(garden.address)}</h2>
+        <p class="muted">${safe(garden.parcel.municipalityName)}${garden.parcel.capakey ? ` · Official parcel ${safe(garden.parcel.capakey)}` : ''}${area ? ` · ${area.toFixed(0)} m²` : ''}</p>
+      </div>
+    </header>
     <div class="garden-planning"></div>
-    <p class="muted">Address location type: ${safe(garden.location.type || 'Not specified')} · Coordinates: ${garden.location.x.toFixed(2)}, ${garden.location.y.toFixed(2)} (Lambert 72)</p>
   </section>`;
   gardenMapCleanup = mountGardenMap(container.querySelector('.garden-planning'), garden, {
     borders: data.borders,
