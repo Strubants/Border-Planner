@@ -344,12 +344,28 @@ function showGarden() {
     suggestionController = controller;
     status.textContent = 'Searching addresses…';
     try {
-      const url = new URL('https://geo.api.vlaanderen.be/Geolocation/v4/Suggestion');
-      url.search = new URLSearchParams({ q: query, c: '8' });
-      const response = await apiJson(url, controller);
-      if (sequence !== suggestionSequence) return;
-      const addresses = response.SuggestionResult;
-      if (!Array.isArray(addresses) || !addresses.length) {
+      const fetchSuggestions = async text => {
+        const url = new URL('https://geo.api.vlaanderen.be/Geolocation/v4/Suggestion');
+        url.search = new URLSearchParams({ q: text, c: '8' });
+        const result = await apiJson(url, controller);
+        return Array.isArray(result.SuggestionResult) ? result.SuggestionResult : [];
+      };
+      // The service returns nothing for "street nr, postcode city"; retry with simpler forms.
+      const plain = query.replace(/[,;]+/g, ' ').replace(/\s+/g, ' ').trim();
+      const noPostcode = plain.replace(/\b[1-9]\d{3}\b/g, '').replace(/\s+/g, ' ').trim();
+      const postcode = plain.match(/\b[1-9]\d{3}\b/)?.[0];
+      let addresses = [];
+      for (const attempt of [...new Set([query, plain, noPostcode])]) {
+        if (attempt.length < 2) continue;
+        addresses = await fetchSuggestions(attempt);
+        if (sequence !== suggestionSequence) return;
+        if (addresses.length) break;
+      }
+      if (postcode) {
+        const sameCode = addresses.filter(item => item.includes(postcode));
+        if (sameCode.length) addresses = sameCode;
+      }
+      if (!addresses.length) {
         status.textContent = 'No address suggestions found. Check the spelling or try a fuller address.';
         return;
       }
