@@ -179,15 +179,20 @@ export async function signOut() {
 export async function restoreSession() {
   let current = session();
   if (!current?.refresh_token) return null;
-  if (current.expires_at <= Math.floor(Date.now() / 1000) + 60) {
-    current = saveAuthSession(await request('/auth/v1/token?grant_type=refresh_token', {
-      method: 'POST',
-      body: { refresh_token: current.refresh_token },
-    }));
+  try {
+    if (current.expires_at <= Math.floor(Date.now() / 1000) + 60) {
+      current = saveAuthSession(await request('/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST',
+        body: { refresh_token: current.refresh_token },
+      }));
+    }
+    const user = await request('/auth/v1/user', { token: current.access_token });
+    current.user = user;
+    setSession(current);
+  } catch (error) {
+    // Stay signed in when offline; only a rejected session should sign the user out.
+    if (!error.message.startsWith('Could not reach Supabase') || !current.user) throw error;
   }
-  const user = await request('/auth/v1/user', { token: current.access_token });
-  current.user = user;
-  setSession(current);
   return current;
 }
 

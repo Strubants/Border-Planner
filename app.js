@@ -66,15 +66,21 @@ async function syncLocalData() {
   }
 }
 
+let savePending = false;
+let currentNav = null;
+
 function save() {
   clearTimeout(saveTimer);
+  savePending = true;
+  if (cloudUser && cloud.getLinkedAccount()?.userId === cloudUser.id) cloud.markAccountDirty(cloudUser.id);
   saveTimer = setTimeout(async () => {
     try {
       await saveData(data);
-      if (cloudUser && cloud.getLinkedAccount()?.userId === cloudUser.id) cloud.markAccountDirty(cloudUser.id);
       queueCloudSave();
     } catch (error) {
       notify('Saving failed: ' + error.message);
+    } finally {
+      savePending = false;
     }
   }, 200);
 }
@@ -156,6 +162,7 @@ function setHeader(title, { back, actions = [] } = {}) {
 }
 
 function setNav(active) {
+  currentNav = active;
   if (active !== 'garden') {
     gardenRequestCleanup?.();
     gardenRequestCleanup = null;
@@ -1212,42 +1219,98 @@ function showPlants() {
 }
 
 // ---------- backup and cloud sync ----------
-async function inspectCloudAccount() {
-  if (!cloudUser) return;
-  updateCloudStatus('Checking this account’s cloud data…');
+const isEmptyData = d => !d.borders?.length && !d.plants?.length && !d.gardens?.length && !d.garden;
+
+function refreshView() {
+  ({ list: showList, plants: showPlants, settings: showSettings })[currentNav]?.();
+}
+
+// Replaces local data with the cloud copy and links this device to that revision.
+async function applyRemote(remote, token) {
+  if (!Array.isArray(remote.data?.borders)) throw new Error('The cloud copy is not a valid Border Planner backup.');
+  const next = remote.data;
+  const migrated = migrate(next);
+  data = next;
+  await saveData(data);
+  cloudRevision = remote.revision;
+  if (migrated) {
+    const saved = await cloud.saveUserData(JSON.parse(JSON.stringify(data)), cloudRevision, token);
+    if (!saved) return false;
+    cloudRevision = saved.revision;
+  }
+  cloud.linkAccount(cloudUser.id, cloudRevision);
+  cloud.clearAccountDirty(cloudUser.id);
+  return true;
+}
+
+async function uploadData(expectedRevision, token) {
+  const saved = await cloud.saveUserData(JSON.parse(JSON.stringify(data)), expectedRevision, token);
+  if (!saved) return false;
+  cloudRevision = saved.revision;
+  cloud.linkAccount(cloudUser.id, cloudRevision);
+  cloud.clearAccountDirty(cloudUser.id);
+  return true;
+}
+
+let reconciling = false;
+
+// Keeps this device and the account's cloud copy in step. Only real conflicts need a decision.
+async function inspectCloudAccount({ silent = false } = {}) {
+  if (!cloudUser || reconciling) return;
+  reconciling = true;
+  if (!silent) updateCloudStatus('Syncing…');
   try {
     const token = await cloud.getAccessToken();
     const remote = await cloud.getUserData(cloudUser.id, token);
     const link = cloud.getLinkedAccount();
     const linked = link?.userId === cloudUser.id;
-    const localMatchesRemote = remote && canonicalJSON(data) === canonicalJSON(remote.data);
+    const dirty = cloud.getDirtyAccount() === cloudUser.id;
+    const same = remote && canonicalJSON(data) === canonicalJSON(remote.data);
+    const remoteEmpty = remote && isEmptyData(remote.data || {});
     cloudRevision = linked ? link.revision : null;
-    cloudChoice = { remote, linked };
+    cloudChoice = null;
     cloudConflict = false;
-    if (linked && remote && remote.revision === link.revision) {
-      cloudChoice = null;
-      if (cloud.getDirtyAccount() === cloudUser.id || !localMatchesRemote) {
+
+    const synced = () => updateCloudStatus(`Synced · revision ${cloudRevision}`);
+    const download = async () => {
+      if (!await applyRemote(remote, token)) throw new Error('The cloud copy changed. Try again.');
+      synced();
+      refreshView();
+    };
+    const upload = async expected => {
+      if (!await uploadData(expected, token)) throw new Error('The cloud copy changed. Try again.');
+      synced();
+    };
+    const choose = message => {
+      cloudChoice = { remote, linked };
+      cloudConflict = linked;
+      cloudStatus = message;
+    };
+
+    if (!remote) {
+      if (linked) choose('No cloud copy was found. Choose whether to upload this device’s data.');
+      else await upload(null);
+    } else if (linked && remote.revision === link.revision) {
+      if (dirty || !same) {
+        if (savePending) return;
         cloud.markAccountDirty(cloudUser.id);
-        updateCloudStatus('Uploading local changes…');
-        queueCloudSave();
-      } else {
-        updateCloudStatus(`Synced · revision ${remote.revision}`);
-      }
-    } else if (remote) {
-      cloudConflict = linked;
-      cloudStatus = linked
-        ? 'Cloud data changed on another device. Choose which copy to keep.'
-        : 'This account already has cloud data. Choose which copy to use.';
-    } else {
-      cloudConflict = linked;
-      cloudStatus = linked
-        ? 'No cloud copy was found. Upload this device’s data to restore syncing.'
-        : 'No cloud copy yet. Upload this device’s data to start syncing.';
-    }
-    renderCloudSettings();
+        await upload(remote.revision);
+      } else synced();
+    } else if (linked) {
+      if (!dirty && !savePending) await download();
+      else choose('This device and another device both changed. Choose which copy to keep.');
+    } else if (same) {
+      cloud.linkAccount(cloudUser.id, remote.revision);
+      cloudRevision = remote.revision;
+      synced();
+    } else if (isEmptyData(data)) await download();
+    else if (remoteEmpty) await upload(remote.revision);
+    else choose('This account already has cloud data and so does this device. Choose which copy to use.');
+    if (!silent || cloudChoice) renderCloudSettings();
   } catch (error) {
-    updateCloudStatus(`Could not check cloud data: ${error.message}`);
-    renderCloudSettings();
+    updateCloudStatus(`Saved on this device. Could not sync: ${error.message}`);
+  } finally {
+    reconciling = false;
   }
 }
 
@@ -1269,25 +1332,13 @@ async function useCloudCopy() {
       renderCloudSettings();
       return;
     }
-    remote = latest;
-    const next = remote.data;
-    const migrated = migrate(next);
-    data = next;
-    await saveData(data);
-    cloudRevision = remote.revision;
-    if (migrated) {
-      const saved = await cloud.saveUserData(JSON.parse(JSON.stringify(data)), cloudRevision, token);
-      if (!saved) {
-        cloudConflict = true;
-        cloudChoice = { remote: await cloud.getUserData(cloudUser.id, token), linked: true };
-        updateCloudStatus('Cloud data changed during migration. Choose which copy to keep in the Account tab.');
-        showList();
-        return;
-      }
-      cloudRevision = saved.revision;
+    if (!await applyRemote(latest, token)) {
+      cloudConflict = true;
+      cloudChoice = { remote: await cloud.getUserData(cloudUser.id, token), linked: true };
+      updateCloudStatus('Cloud data changed during migration. Choose which copy to keep in the Account tab.');
+      showList();
+      return;
     }
-    cloud.linkAccount(cloudUser.id, cloudRevision);
-    cloud.clearAccountDirty(cloudUser.id);
     cloudChoice = null;
     cloudConflict = false;
     updateCloudStatus(`Synced · revision ${cloudRevision}`);
@@ -1332,7 +1383,7 @@ function renderCloudSettings() {
     root.innerHTML = `<p>Signed in as <b>${esc(cloudUser.email || 'your account')}</b>.</p>
       <p class="muted cloud-sync-status" id="cloud-sync-status">${esc(cloudStatus)}</p>
       <div class="row">
-        <button class="btn" type="button" id="cloud-check">Check sync</button>
+        <button class="btn" type="button" id="cloud-check">Sync now</button>
         <button class="btn alt" type="button" id="cloud-sign-out">Sign out</button>
       </div>
       ${cloudChoice ? `<div class="cloud-sync-choice">
@@ -1340,7 +1391,7 @@ function renderCloudSettings() {
         ${cloudChoice.remote ? '<button class="btn alt" type="button" id="cloud-use-copy">Use cloud copy on this device</button>' : ''}
         <button class="btn" type="button" id="cloud-upload-copy">${cloudChoice.remote ? 'Replace cloud with this device' : 'Upload this device to cloud'}</button>
       </div>` : ''}
-      <p class="muted">Edits save on this device first, then sync when online. Garden data is private to this account.</p>`;
+      <p class="muted">Changes sync to your account automatically, and you stay signed in on this device. Garden data is private to this account.</p>`;
     $('cloud-check').onclick = inspectCloudAccount;
     $('cloud-sign-out').onclick = async () => {
       try {
@@ -1440,7 +1491,7 @@ function showWelcome() {
       <input id="cloud-password" type="password" autocomplete="current-password">
       <p class="welcome-status" id="cloud-sync-status" role="status"></p>
       <button class="btn" type="submit" id="welcome-create">Create account</button>
-      <button class="btn alt" type="button" id="welcome-signin">I already have an account</button>
+      <button class="btn alt" type="button" id="welcome-signin">Sign in</button>
     </form>
     <button class="welcome-skip" type="button" id="welcome-skip">Continue without an account</button>
     <p class="welcome-note">Your data stays on this device until you choose to sync it. Nothing is overwritten without asking.</p>
@@ -1518,4 +1569,12 @@ function showSettings() {
   } catch (error) {
     updateCloudStatus(`Local data is available, but cloud sync could not start: ${error.message}`);
   }
+  const autoSync = () => {
+    if (cloudUser && !cloudChoice && !cloudConflict && !savePending && !cloudSaveInProgress && ['list', 'plants', 'settings'].includes(currentNav)) {
+      inspectCloudAccount({ silent: true });
+    }
+  };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') autoSync(); });
+  window.addEventListener('online', autoSync);
+  setInterval(autoSync, 60000);
 })();
