@@ -1,6 +1,7 @@
 import { dist, polygonArea, centroid, pointInPolygon, bbox, setEdgeLength, rectangle, ellipse, triangle, closestOnPolygon, distToPolygon, polygonsOverlap, insideOrOn } from './geometry.js';
 import { loadData, saveData, uid } from './store.js';
 import { mountGardenMap } from './garden-map.js';
+import * as cloud from './cloud-sync.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const $ = id => document.getElementById(id);
@@ -12,9 +13,70 @@ let data;
 let saveTimer;
 let gardenMapCleanup;
 let gardenRequestCleanup;
+let cloudUser = null;
+let cloudRevision = null;
+let cloudStatus = 'Not connected';
+let cloudChoice = null;
+let cloudConflict = false;
+let cloudSaveTimer;
+let cloudSaveInProgress = false;
+let cloudSaveQueued = false;
+
+function updateCloudStatus(message) {
+  cloudStatus = message;
+  const status = $('cloud-sync-status');
+  if (status) status.textContent = message;
+}
+
+function queueCloudSave() {
+  if (!cloudUser || cloudConflict || cloud.getLinkedAccount()?.userId !== cloudUser.id) return;
+  clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = setTimeout(syncLocalData, 900);
+}
+
+async function syncLocalData() {
+  if (!cloudUser || cloudConflict || cloud.getLinkedAccount()?.userId !== cloudUser.id) return;
+  if (cloudSaveInProgress) {
+    cloudSaveQueued = true;
+    return;
+  }
+  cloudSaveInProgress = true;
+  try {
+    const token = await cloud.getAccessToken();
+    const snapshot = JSON.parse(JSON.stringify(data));
+    const saved = await cloud.saveUserData(snapshot, cloudRevision, token);
+    if (!saved) {
+      cloudConflict = true;
+      cloudChoice = { remote: await cloud.getUserData(cloudUser.id, token), linked: true };
+      updateCloudStatus('Another device has newer cloud data. Choose which copy to keep below.');
+      return;
+    }
+    cloudRevision = saved.revision;
+    cloud.linkAccount(cloudUser.id, cloudRevision);
+    cloud.clearAccountDirty(cloudUser.id);
+    updateCloudStatus(`Synced just now · revision ${cloudRevision}`);
+  } catch (error) {
+    updateCloudStatus(`Saved on this device. Cloud sync failed: ${error.message}`);
+  } finally {
+    cloudSaveInProgress = false;
+    if (cloudSaveQueued) {
+      cloudSaveQueued = false;
+      queueCloudSave();
+    }
+  }
+}
+
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => saveData(data).catch(e => notify('Saving failed: ' + e.message)), 200);
+  saveTimer = setTimeout(async () => {
+    try {
+      await saveData(data);
+      if (cloudUser && cloud.getLinkedAccount()?.userId === cloudUser.id) cloud.markAccountDirty(cloudUser.id);
+      queueCloudSave();
+    } catch (error) {
+      notify('Saving failed: ' + error.message);
+    }
+  }, 200);
 }
 
 const byName = (a, b) => a.name.localeCompare(b.name);
@@ -64,6 +126,18 @@ function migrate(d) {
   if (d.version !== 3) changed = true;
   d.version = 3;
   return changed;
+}
+
+function canonicalJSON(value) {
+  if (Array.isArray(value)) return `[${value.map(item => canonicalJSON(item) ?? 'null').join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.keys(value)
+      .filter(key => value[key] !== undefined)
+      .sort()
+      .map(key => `${JSON.stringify(key)}:${canonicalJSON(value[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function setHeader(title, { back, actions = [] } = {}) {
@@ -1137,14 +1211,274 @@ function showPlants() {
   draw();
 }
 
-// ---------- backup ----------
+// ---------- backup and cloud sync ----------
+async function inspectCloudAccount() {
+  if (!cloudUser) return;
+  updateCloudStatus('Checking this account’s cloud data…');
+  try {
+    const token = await cloud.getAccessToken();
+    const remote = await cloud.getUserData(cloudUser.id, token);
+    const link = cloud.getLinkedAccount();
+    const linked = link?.userId === cloudUser.id;
+    const localMatchesRemote = remote && canonicalJSON(data) === canonicalJSON(remote.data);
+    cloudRevision = linked ? link.revision : null;
+    cloudChoice = { remote, linked };
+    cloudConflict = false;
+    if (linked && remote && remote.revision === link.revision) {
+      cloudChoice = null;
+      if (cloud.getDirtyAccount() === cloudUser.id || !localMatchesRemote) {
+        cloud.markAccountDirty(cloudUser.id);
+        updateCloudStatus('Uploading local changes…');
+        queueCloudSave();
+      } else {
+        updateCloudStatus(`Synced · revision ${remote.revision}`);
+      }
+    } else if (remote) {
+      cloudConflict = linked;
+      cloudStatus = linked
+        ? 'Cloud data changed on another device. Choose which copy to keep.'
+        : 'This account already has cloud data. Choose which copy to use.';
+    } else {
+      cloudConflict = linked;
+      cloudStatus = linked
+        ? 'No cloud copy was found. Upload this device’s data to restore syncing.'
+        : 'No cloud copy yet. Upload this device’s data to start syncing.';
+    }
+    renderCloudSettings();
+  } catch (error) {
+    updateCloudStatus(`Could not check cloud data: ${error.message}`);
+    renderCloudSettings();
+  }
+}
+
+async function useCloudCopy() {
+  let remote = cloudChoice?.remote;
+  if (!remote) return;
+  if (!Array.isArray(remote.data?.borders)) {
+    notify('The cloud copy is not a valid Border Planner backup.');
+    return;
+  }
+  if (!await ask('Replace the data on this device with the cloud copy?', 'Use cloud copy')) return;
+  try {
+    const token = await cloud.getAccessToken();
+    const latest = await cloud.getUserData(cloudUser.id, token);
+    if (!latest || latest.revision !== remote.revision) {
+      cloudChoice = { remote: latest, linked: cloudChoice.linked };
+      cloudConflict = cloudChoice.linked;
+      updateCloudStatus('The cloud copy changed. Review the current version before replacing local data.');
+      renderCloudSettings();
+      return;
+    }
+    remote = latest;
+    const next = remote.data;
+    const migrated = migrate(next);
+    data = next;
+    await saveData(data);
+    cloudRevision = remote.revision;
+    if (migrated) {
+      const saved = await cloud.saveUserData(JSON.parse(JSON.stringify(data)), cloudRevision, token);
+      if (!saved) {
+        cloudConflict = true;
+        cloudChoice = { remote: await cloud.getUserData(cloudUser.id, token), linked: true };
+        updateCloudStatus('Cloud data changed during migration. Choose which copy to keep in the Account tab.');
+        showList();
+        return;
+      }
+      cloudRevision = saved.revision;
+    }
+    cloud.linkAccount(cloudUser.id, cloudRevision);
+    cloud.clearAccountDirty(cloudUser.id);
+    cloudChoice = null;
+    cloudConflict = false;
+    updateCloudStatus(`Synced · revision ${cloudRevision}`);
+    showList();
+  } catch (error) {
+    updateCloudStatus(`Could not use cloud copy: ${error.message}`);
+    renderCloudSettings();
+  }
+}
+
+async function uploadLocalCopy() {
+  if (!cloudUser || !cloudChoice) return;
+  const remote = cloudChoice.remote;
+  if (remote && !await ask('Replace the cloud copy for this account with this device’s data? Other devices will receive this copy.', 'Replace cloud data')) return;
+  try {
+    const token = await cloud.getAccessToken();
+    const saved = await cloud.saveUserData(JSON.parse(JSON.stringify(data)), remote?.revision ?? null, token);
+    if (!saved) {
+      cloudConflict = true;
+      updateCloudStatus('The cloud copy changed while syncing. Check again before choosing a copy.');
+      await inspectCloudAccount();
+      return;
+    }
+    cloudRevision = saved.revision;
+    cloud.linkAccount(cloudUser.id, cloudRevision);
+    cloud.clearAccountDirty(cloudUser.id);
+    cloudChoice = null;
+    cloudConflict = false;
+    updateCloudStatus(`Synced just now · revision ${cloudRevision}`);
+    renderCloudSettings();
+  } catch (error) {
+    updateCloudStatus(`Could not upload this device’s data: ${error.message}`);
+    renderCloudSettings();
+  }
+}
+
+function renderCloudSettings() {
+  const root = $('cloud-sync-panel');
+  if (!root) return;
+  const settings = cloud.getCloudConfig();
+  if (cloudUser) {
+    root.innerHTML = `<p>Signed in as <b>${esc(cloudUser.email || 'your account')}</b>.</p>
+      <p class="muted cloud-sync-status" id="cloud-sync-status">${esc(cloudStatus)}</p>
+      <div class="row">
+        <button class="btn" type="button" id="cloud-check">Check sync</button>
+        <button class="btn alt" type="button" id="cloud-sign-out">Sign out</button>
+      </div>
+      ${cloudChoice ? `<div class="cloud-sync-choice">
+        <p>${cloudChoice.remote ? 'There is a cloud copy for this account. Choose explicitly; neither copy is replaced until you confirm.' : 'There is no cloud copy yet.'}</p>
+        ${cloudChoice.remote ? '<button class="btn alt" type="button" id="cloud-use-copy">Use cloud copy on this device</button>' : ''}
+        <button class="btn" type="button" id="cloud-upload-copy">${cloudChoice.remote ? 'Replace cloud with this device' : 'Upload this device to cloud'}</button>
+      </div>` : ''}
+      <p class="muted">Edits save on this device first, then sync when online. Garden data is private to this account.</p>`;
+    $('cloud-check').onclick = inspectCloudAccount;
+    $('cloud-sign-out').onclick = async () => {
+      try {
+        await cloud.signOut();
+        cloudUser = null;
+        cloudRevision = null;
+        cloudChoice = null;
+        cloudConflict = false;
+        updateCloudStatus('Signed out. Your data remains saved on this device.');
+        renderCloudSettings();
+      } catch (error) {
+        notify(`Could not sign out: ${error.message}`);
+      }
+    };
+    $('cloud-use-copy')?.addEventListener('click', useCloudCopy);
+    const uploadButton = $('cloud-upload-copy');
+    if (uploadButton) uploadButton.onclick = uploadLocalCopy;
+    return;
+  }
+
+  root.innerHTML = `${settings ? `<p class="muted">Sign in on each device with the same account to sync your garden. Each account has private data.</p>
+    <label for="cloud-email">Email</label><input id="cloud-email" type="email" autocomplete="email" required>
+    <label for="cloud-password">Password</label><input id="cloud-password" type="password" autocomplete="current-password" required>
+    <p class="muted cloud-sync-status" id="cloud-sync-status">${esc(cloudStatus)}</p>
+    <div class="row"><button class="btn" type="button" id="cloud-sign-in">Sign in</button>
+    <button class="btn alt" type="button" id="cloud-sign-up">Create account</button></div>`
+    : `<p class="muted">Add your Supabase project connection below to enable accounts and private cloud sync. Your local app continues to work without it.</p>
+      <p class="muted cloud-sync-status" id="cloud-sync-status">${esc(cloudStatus)}</p>`}
+    <details class="cloud-setup">
+      <summary>${settings ? 'Supabase project connection' : 'Set up Supabase connection'}</summary>
+      <p class="muted">Use your Supabase Project URL and the publishable (or legacy anon) public key. Never enter a service-role key here.</p>
+      <label for="cloud-project-url">Project URL</label><input id="cloud-project-url" type="url" autocomplete="url" placeholder="https://your-project.supabase.co" value="${esc(settings?.url || '')}">
+      <label for="cloud-public-key">Publishable / anon public key</label><input id="cloud-public-key" type="text" autocomplete="off" value="${esc(settings?.publicKey || '')}">
+      <button class="btn alt" type="button" id="cloud-save-config">Save connection</button>
+      <p class="muted">Run the included <code>supabase-schema.sql</code> in your Supabase SQL Editor first. Setup instructions are in <code>SUPABASE_SETUP.md</code>.</p>
+    </details>`;
+  $('cloud-sign-in')?.addEventListener('click', () => authenticate('sign-in'));
+  $('cloud-sign-up')?.addEventListener('click', () => authenticate('sign-up'));
+  $('cloud-save-config')?.addEventListener('click', () => {
+    try {
+      cloud.configureCloud($('cloud-project-url').value, $('cloud-public-key').value);
+      cloudUser = null;
+      cloudRevision = null;
+      cloudChoice = null;
+      cloudConflict = false;
+      cloudStatus = 'Project connection saved on this device.';
+      renderCloudSettings();
+    } catch (error) {
+      updateCloudStatus(error.message);
+    }
+  });
+}
+
+async function authenticate(action) {
+  const email = $('cloud-email')?.value.trim();
+  const password = $('cloud-password')?.value || '';
+  if (!email || !password) {
+    updateCloudStatus('Enter your email and password.');
+    return;
+  }
+  updateCloudStatus(action === 'sign-in' ? 'Signing in…' : 'Creating account…');
+  try {
+    if (action === 'sign-in') {
+      const session = await cloud.signIn(email, password);
+      cloudUser = session.user;
+      cloudStatus = 'Signed in. Checking cloud data…';
+      await inspectCloudAccount();
+    } else {
+      const result = await cloud.signUp(email, password);
+      if (!result.session) {
+        updateCloudStatus('Account created. Check your email, confirm the account, then return here and sign in.');
+        return false;
+      }
+      cloudUser = result.session.user;
+      await inspectCloudAccount();
+    }
+    return !!cloudUser;
+  } catch (error) {
+    updateCloudStatus(`${action === 'sign-in' ? 'Sign in' : 'Account creation'} failed: ${error.message}`);
+    return false;
+  }
+}
+
+const WELCOME_KEY = 'borderplanner-welcome-done';
+
+function showWelcome() {
+  const el = document.createElement('div');
+  el.className = 'welcome';
+  el.innerHTML = `<div class="welcome-card">
+    <img src="icon.svg" alt="" class="welcome-logo">
+    <h1>Border Planner</h1>
+    <p class="welcome-lead">Plan your garden and keep it with you on every device.</p>
+    <form id="welcome-form" novalidate>
+      <label for="cloud-email">Email</label>
+      <input id="cloud-email" type="email" autocomplete="email" inputmode="email">
+      <label for="cloud-password">Password</label>
+      <input id="cloud-password" type="password" autocomplete="current-password">
+      <p class="welcome-status" id="cloud-sync-status" role="status"></p>
+      <button class="btn" type="submit" id="welcome-create">Create account</button>
+      <button class="btn alt" type="button" id="welcome-signin">I already have an account</button>
+    </form>
+    <button class="welcome-skip" type="button" id="welcome-skip">Continue without an account</button>
+    <p class="welcome-note">Your data stays on this device until you choose to sync it. Nothing is overwritten without asking.</p>
+  </div>`;
+  document.body.append(el);
+  const finish = goToAccount => {
+    localStorage.setItem(WELCOME_KEY, '1');
+    el.remove();
+    if (goToAccount) showSettings();
+  };
+  const run = async action => {
+    const buttons = el.querySelectorAll('button');
+    buttons.forEach(b => { b.disabled = true; });
+    const ok = await authenticate(action);
+    buttons.forEach(b => { b.disabled = false; });
+    if (ok) finish(!!cloudChoice);
+  };
+  el.querySelector('#welcome-form').onsubmit = e => { e.preventDefault(); run('sign-up'); };
+  el.querySelector('#welcome-signin').onclick = () => run('sign-in');
+  el.querySelector('#welcome-skip').onclick = () => finish(false);
+}
+
 function showSettings() {
   setNav('settings');
-  setHeader('Backup');
-  main.innerHTML = `<div class="pad">
-    <p class="muted">Your data lives only on this phone. Export a backup file regularly (browser data can be cleared).</p>
-    <div class="row"><button class="btn" id="exp">Export backup</button>
-    <label class="btn alt" style="margin:0">Import backup<input type="file" id="imp" accept="application/json" hidden></label></div></div>`;
+  setHeader('Account');
+  main.innerHTML = `<div class="pad settings-page">
+    <section class="card">
+      <h2>Account & cloud sync</h2>
+      <div id="cloud-sync-panel"></div>
+    </section>
+    <section class="card">
+      <h2>Local backup</h2>
+      <p class="muted">A backup file gives you an extra copy. Keep one even when cloud sync is enabled.</p>
+      <div class="row"><button class="btn" id="exp">Export backup</button>
+      <label class="btn alt" style="margin:0">Import backup<input type="file" id="imp" accept="application/json" hidden></label></div>
+    </section>
+  </div>`;
+  renderCloudSettings();
   $('exp').onclick = () => {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
@@ -1171,4 +1505,17 @@ function showSettings() {
   if (migrate(data)) save();
   showList();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+  try {
+    cloud.consumeAuthRedirect();
+    if (cloud.getCloudConfig() && cloud.getStoredSession()) {
+      const session = await cloud.restoreSession();
+      cloudUser = session.user;
+      cloudStatus = 'Signed in. Checking cloud data…';
+      await inspectCloudAccount();
+    } else if (!localStorage.getItem(WELCOME_KEY)) {
+      showWelcome();
+    }
+  } catch (error) {
+    updateCloudStatus(`Local data is available, but cloud sync could not start: ${error.message}`);
+  }
 })();
