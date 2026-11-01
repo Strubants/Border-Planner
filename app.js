@@ -1128,7 +1128,10 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
   const p = plant ?? { id: uid(), name: '', color: '#e8a2c1', bloomFrom: 0, bloomTo: 0, water: '', sun: '', notes: '' };
   openDialog(`<h2>${plant ? 'Edit plant' : 'New plant'}</h2>
     ${plant ? '<p class="muted">Changes apply to every zone that uses this plant.</p>' : ''}
-    <label>Name</label><input type="text" id="pl-name" value="${esc(p.name)}" placeholder="e.g. Tulip ‘Queen of Night’">
+    <label>Name</label>
+    <div class="row"><input type="text" id="pl-name" class="grow" value="${esc(p.name)}" placeholder="e.g. Tulip ‘Queen of Night’">
+    <button class="btn alt" type="button" id="pl-autofill">Autofill</button></div>
+    <p class="muted" id="pl-autofill-msg" hidden></p>
     <div class="row"><div class="grow"><label>Blooms from</label><select id="pl-from">${monthOptions(p.bloomFrom)}</select></div>
     <div class="grow"><label>until</label><select id="pl-to">${monthOptions(p.bloomTo)}</select></div>
     <div><label>Colour</label><input type="color" id="pl-color" value="${esc(p.color)}"></div></div>
@@ -1138,6 +1141,37 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
     <div class="dlg-btns">${plant && canDelete ? '<button class="btn danger" id="pl-del">Delete</button>' : ''}<button class="btn alt" id="pl-cancel">Cancel</button><button class="btn" id="pl-save">Save</button></div>`,
   d => {
     d.querySelector('#pl-cancel').onclick = () => { closeDialog(); onCancel?.(); };
+    const msg = d.querySelector('#pl-autofill-msg');
+    const showMsg = text => { msg.textContent = text; msg.hidden = !text; };
+    d.querySelector('#pl-autofill').onclick = async e => {
+      const btn = e.currentTarget;
+      const name = d.querySelector('#pl-name').value.trim();
+      if (name.length < 2) { showMsg('Type the plant name first.'); return; }
+      if (!cloudUser) { showMsg('Sign in on the Account tab to use autofill.'); return; }
+      btn.disabled = true;
+      showMsg('Looking up plant details…');
+      try {
+        const r = await cloud.autofillPlant(name);
+        if (!r.found) { showMsg('Plant not recognised. Check the spelling or try the Latin name.'); return; }
+        const set = (id, value) => {
+          const el = d.querySelector(id);
+          if (value === '' || value === 0 || value == null) return;
+          el.value = value;
+          el.classList.add('autofilled');
+        };
+        set('#pl-from', r.bloomFrom);
+        set('#pl-to', r.bloomTo);
+        set('#pl-color', r.color);
+        set('#pl-water', r.water);
+        set('#pl-sun', r.sun);
+        if (r.notes && !d.querySelector('#pl-notes').value.trim()) set('#pl-notes', r.notes);
+        showMsg('Filled in by AI. Please check the highlighted fields before saving.');
+      } catch (error) {
+        showMsg(error.message);
+      } finally {
+        btn.disabled = false;
+      }
+    };
     d.querySelector('#pl-del')?.addEventListener('click', async () => {
       const uses = data.borders.flatMap(b => b.zones).filter(z => z.plants.some(e => e.plantId === p.id)).length;
       if (!await ask(uses ? `“${p.name}” is planted in ${uses} zone(s). Delete it from the library and from those zones?` : `Delete “${p.name}”?`)) return;

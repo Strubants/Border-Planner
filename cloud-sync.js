@@ -224,6 +224,28 @@ export async function saveUserData(data, expectedRevision, accessToken) {
   return rows?.[0] || null;
 }
 
+export async function autofillPlant(name) {
+  const settings = config();
+  const token = await getAccessToken();
+  let response;
+  try {
+    response = await fetch(`${settings.url}/functions/v1/plant-autofill`, {
+      method: 'POST',
+      headers: { apikey: settings.publicKey, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+  } catch (error) {
+    throw new Error(`Could not reach the autofill service: ${error.message}`);
+  }
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(response.status === 404
+      ? 'Autofill is not set up yet. Deploy the plant-autofill function in Supabase.'
+      : payload?.error || payload?.message || `Autofill failed (HTTP ${response.status}).`);
+  }
+  return payload;
+}
+
 export function consumeAuthRedirect() {
   const params = new URLSearchParams(location.hash.slice(1));
   const accessToken = params.get('access_token');
