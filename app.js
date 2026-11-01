@@ -151,6 +151,7 @@ function setHeader(title, { back, actions = [] } = {}) {
   const b = $('back');
   b.hidden = !back;
   b.onclick = back || null;
+  $('gear').hidden = !!back;
   const a = $('actions');
   a.innerHTML = '';
   for (const act of actions) {
@@ -171,11 +172,13 @@ function setNav(active) {
   }
   $('nav').classList.toggle('hidden', !active);
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.nav === active));
+  $('gear').classList.toggle('on', active === 'settings');
 }
 
 document.querySelectorAll('#nav button').forEach(b => {
-  b.onclick = () => ({ list: showList, garden: showGarden, plants: showPlants, settings: showSettings })[b.dataset.nav]();
+  b.onclick = () => ({ list: showList, garden: showGarden, plants: showPlants })[b.dataset.nav]();
 });
+$('gear').onclick = () => showSettings();
 
 // ---------- dialogs ----------
 function openDialog(html, onMount) {
@@ -224,10 +227,10 @@ function showList() {
     return;
   }
   for (const b of data.borders) {
-    const plants = b.zones.reduce((n, z) => n + z.plants.length, 0);
+    const plants = b.zones.reduce((n, z) => n + z.plants.reduce((s, e) => s + (e.count || 0), 0), 0);
     const card = document.createElement('div');
     card.className = 'card click';
-    card.innerHTML = `<b>${esc(b.name)}</b><div class="muted">${b.points.length ? m2(polygonArea(b.points) / 100) + ' m² · ' : ''}${b.zones.length} zones · ${plants} plants</div>`;
+    card.innerHTML = `<b>${esc(b.name)}</b><div class="muted">${b.points.length ? m2(polygonArea(b.points) / 100) + ' m² · ' : ''}${b.zones.length} zones${plants ? ` · ${plants} planted` : ''}</div>`;
     card.onclick = () => openEditor(b.id);
     items.append(card);
   }
@@ -580,6 +583,32 @@ function newBorderDialog() {
 }
 
 // ---------- editor ----------
+const ICONS = Object.fromEntries(Object.entries({
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  pencil: '<path d="M4 20l1-5L16 4l4 4L9 19z"/><path d="M14 6l4 4"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
+  unlock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 017.5-2"/>',
+  pointMinus: '<circle cx="9" cy="12" r="4"/><path d="M16 12h6"/>',
+  ruler: '<rect x="2" y="8" width="20" height="8" rx="1"/><path d="M6 8v4M10 8v3M14 8v4M18 8v3"/>',
+  magnet: '<path d="M6 3v8a6 6 0 0012 0V3h-4v8a2 2 0 01-4 0V3z"/><path d="M6 7h4M14 7h4"/>',
+  details: '<path d="M4 6h16M4 12h16M4 18h10"/>',
+  rect: '<rect x="4" y="6" width="16" height="12" rx="1"/>',
+  oval: '<ellipse cx="12" cy="12" rx="9" ry="6"/>',
+  triangle: '<path d="M12 4l9 16H3z"/>',
+}).map(([k, v]) => [k, `<svg viewBox="0 0 24 24" aria-hidden="true">${v}</svg>`]));
+
+function shapePoints(kind, c, w, h) {
+  const hw = w / 2, hh = h / 2;
+  if (kind === 'rect') return [{ x: c.x - hw, y: c.y - hh }, { x: c.x + hw, y: c.y - hh }, { x: c.x + hw, y: c.y + hh }, { x: c.x - hw, y: c.y + hh }];
+  if (kind === 'triangle') return [{ x: c.x, y: c.y - hh }, { x: c.x + hw, y: c.y + hh }, { x: c.x - hw, y: c.y + hh }];
+  return Array.from({ length: 12 }, (_, i) => ({ x: c.x + hw * Math.cos(i / 12 * 2 * Math.PI), y: c.y + hh * Math.sin(i / 12 * 2 * Math.PI) }));
+}
+
 function openEditor(borderId) {
   const border = data.borders.find(b => b.id === borderId);
   if (!border) return showList();
@@ -596,6 +625,7 @@ function openEditor(borderId) {
   const st = {
     mode: border.points.length ? 'view' : 'drawBorder', // view | edit | drawBorder | drawZone
     draft: [],
+    shape: null,
     sel: { kind: 'border' },
     selVertex: -1,
     vb: { x: 0, y: 0, w: 500 },
@@ -643,8 +673,17 @@ function openEditor(borderId) {
     return { x: st.vb.x + (e.clientX - r.left) * kk, y: st.vb.y + (e.clientY - r.top) * kk };
   };
 
+  // Square resize handles just outside each corner of the shape's bounding box.
+  function scaleHandles(points) {
+    const b = bbox(points), off = 22 * k();
+    return [[b.minX, b.minY, -1, -1], [b.maxX, b.minY, 1, -1], [b.maxX, b.maxY, 1, 1], [b.minX, b.maxY, -1, 1]].map(([x, y, sx, sy]) => ({
+      corner: { x, y }, anchor: { x: sx < 0 ? b.maxX : b.minX, y: sy < 0 ? b.maxY : b.minY }, x: x + sx * off, y: y + sy * off,
+    }));
+  }
+
   function render() {
     const r = rect(), kk = k();
+    if (!r.width || !r.height) return;
     const { vb } = st;
     svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.w * r.height / r.width}`);
     const px = n => n * kk;
@@ -664,7 +703,7 @@ function openEditor(borderId) {
       const zsel = st.mode === 'edit' && st.sel.kind === 'zone' && st.sel.id === z.id;
       s += `<polygon points="${poly(z.points)}" fill="${col}" fill-opacity=".55" stroke="${zsel ? '#d6730a' : col}" stroke-width="${px(zsel ? 3 : 2)}" stroke-linejoin="round"/>`;
       const c = centroid(z.points);
-      const label = z.name || z.plants.map(e => rp(e).name).join(', ');
+      const label = z.name || z.plants.map(e => rp(e).name + (e.count ? ` ×${e.count}` : '')).join(', ');
       if (label) s += `<text x="${c.x}" y="${c.y}" font-size="${px(13)}" text-anchor="middle" dominant-baseline="middle" fill="#1d2a1f" stroke="#fff" stroke-width="${px(3)}" paint-order="stroke">${esc(label)}</text>`;
     }
     // edge lengths of the border
@@ -681,6 +720,19 @@ function openEditor(borderId) {
     if (st.draft.length) {
       s += `<polyline points="${poly(st.draft)}" fill="none" stroke="#d6730a" stroke-width="${px(2.5)}" stroke-dasharray="${px(6)}"/>`;
       st.draft.forEach((p, i) => { s += `<circle cx="${p.x}" cy="${p.y}" r="${px(i === 0 ? 9 : 6)}" fill="${i === 0 ? '#2f6b3a' : '#d6730a'}"/>`; });
+    }
+    // quick shape being placed
+    if (st.mode === 'placeShape' && st.shape) {
+      s += `<polygon points="${poly(st.shape.points)}" fill="#d6730a" fill-opacity=".3" stroke="#d6730a" stroke-width="${px(2.5)}" stroke-dasharray="${px(6)}" stroke-linejoin="round"/>`;
+    }
+    const holder = st.mode === 'placeShape' ? st.shape : st.mode === 'edit' ? selZone() : null;
+    if (holder) {
+      const bb = bbox(holder.points);
+      s += `<rect x="${bb.minX}" y="${bb.minY}" width="${bb.maxX - bb.minX}" height="${bb.maxY - bb.minY}" fill="none" stroke="#d6730a" stroke-width="${px(1)}" stroke-dasharray="${px(4)}" opacity=".7"/>`;
+      for (const h of scaleHandles(holder.points)) {
+        const r = px(8);
+        s += `<line x1="${h.corner.x}" y1="${h.corner.y}" x2="${h.x}" y2="${h.y}" stroke="#d6730a" stroke-width="${px(1)}" opacity=".7"/><rect x="${h.x - r}" y="${h.y - r}" width="${2 * r}" height="${2 * r}" rx="${px(2)}" fill="#fff" stroke="#d6730a" stroke-width="${px(2)}"/>`;
+      }
     }
     // handles
     if (st.mode === 'edit') {
@@ -703,11 +755,15 @@ function openEditor(borderId) {
   }
 
   function renderTools() {
-    const btn = (label, on, fn, disabled, kind) => {
+    const btn = (icon, label, { on, fn, disabled, kind, text } = {}) => {
       const b = document.createElement('button');
-      b.textContent = label;
+      b.type = 'button';
+      b.innerHTML = ICONS[icon] + (text ? `<span>${label}</span>` : '');
+      b.title = label;
+      b.setAttribute('aria-label', label);
       b.classList.toggle('on', !!on);
       if (kind) b.classList.add(kind);
+      if (text) b.classList.add('with-text');
       b.disabled = !!disabled;
       b.onclick = fn;
       return b;
@@ -715,65 +771,111 @@ function openEditor(borderId) {
     tools.innerHTML = '';
     const hasBorder = border.points.length >= 3;
     const drawing = st.mode === 'drawBorder' || st.mode === 'drawZone';
-    const goMode = m => () => { st.mode = m; st.draft = []; st.selVertex = -1; update(); };
+    const goMode = m => () => { st.mode = m; st.draft = []; st.shape = null; st.selVertex = -1; update(); };
+    const snapBtn = () => btn('magnet', st.snap ? 'Snap to border: on' : 'Snap to border: off', { on: st.snap, fn: toggleSnap });
 
-    const actions = [];
-    if (drawing) {
-      actions.push(
-        btn('Finish', false, finishDraft, st.draft.length < 3, 'primary'),
-        btn('Undo last point', false, () => { st.draft.pop(); update(); }, !st.draft.length),
+    // each group: [label, buttons]
+    const groups = [];
+    if (st.mode === 'placeShape') {
+      groups.push(
+        ['Place shape', [btn('check', 'Place', { fn: confirmShape, kind: 'primary', text: true }), btn('x', 'Cancel', { fn: goMode('drawZone') })]],
+        ['Options', [snapBtn()]],
       );
-      if (st.mode === 'drawZone') {
-        actions.push(btn(st.snap ? 'Snap: on' : 'Snap: off', st.snap, toggleSnap), btn('Cancel', false, goMode('view')));
+    } else if (drawing) {
+      const first = st.mode === 'drawZone' && !st.draft.length;
+      if (first) {
+        groups.push(['Quick shapes', [
+          btn('rect', 'Rectangle', { fn: () => startShape('rect') }),
+          btn('oval', 'Oval', { fn: () => startShape('oval') }),
+          btn('triangle', 'Triangle', { fn: () => startShape('triangle') }),
+        ]]);
       }
+      groups.push([first ? 'Or draw freehand' : st.mode === 'drawZone' ? 'New zone' : 'Border outline', [
+        btn('check', 'Finish', { fn: finishDraft, disabled: st.draft.length < 3, kind: 'primary', text: true }),
+        btn('undo', 'Undo last point', { fn: () => { st.draft.pop(); update(); }, disabled: !st.draft.length }),
+        ...(st.mode === 'drawZone' ? [snapBtn(), btn('x', 'Cancel', { fn: goMode('view') })] : []),
+      ]]);
     } else if (st.mode === 'edit') {
       const isZone = st.sel.kind === 'zone';
-      actions.push(
-        btn('Edge lengths', false, lengthsDialog),
-        btn('Delete point', false, deleteVertex, st.selVertex < 0 || selPts().length <= 3 || !!selPts()[st.selVertex]?.fixed),
-      );
+      const noDelete = st.selVertex < 0 || selPts().length <= 3 || !!selPts()[st.selVertex]?.fixed;
+      const pointBtns = [btn('pointMinus', 'Delete point', { fn: deleteVertex, disabled: noDelete })];
       if (!isZone) {
         const fixed = !!border.points[st.selVertex]?.fixed;
-        actions.push(btn(fixed ? 'Unlock point' : 'Lock point', fixed, toggleLock, st.selVertex < 0));
+        pointBtns.push(btn(fixed ? 'unlock' : 'lock', fixed ? 'Unlock point' : 'Lock point', { on: fixed, fn: toggleLock, disabled: st.selVertex < 0 }));
       }
+      groups.push(['Point', pointBtns]);
+      groups.push(['Shape', [btn('ruler', 'Edge lengths', { fn: lengthsDialog }), ...(isZone ? [snapBtn()] : [])]]);
       if (isZone) {
-        actions.push(
-          btn('Zone details', false, () => zoneDialog(border, selZone(), update, false)),
-          btn(st.snap ? 'Snap: on' : 'Snap: off', st.snap, toggleSnap),
-          btn('Delete zone', false, async () => {
-            if (await ask('Delete this zone and its plants?')) {
-              border.zones = border.zones.filter(z => z.id !== st.sel.id);
-              st.sel = { kind: 'border' }; save(); update();
-            }
-          }, false, 'danger'),
-        );
+        groups.push(['Zone', [
+          btn('details', 'Zone details and plants', { fn: () => zoneDialog(border, selZone(), update, false) }),
+          btn('trash', 'Delete zone', {
+            kind: 'danger',
+            fn: async () => {
+              if (await ask('Delete this zone and its plants?')) {
+                border.zones = border.zones.filter(z => z.id !== st.sel.id);
+                st.sel = { kind: 'border' }; save(); update();
+              }
+            },
+          }),
+        ]]);
       }
     }
-    if (actions.length) {
+    if (groups.length) {
       const row = document.createElement('div');
       row.className = 'tool-actions';
-      const label = document.createElement('span');
-      label.className = 'tool-label';
-      label.textContent = drawing ? (st.mode === 'drawZone' ? 'New zone' : 'Border outline') : st.sel.kind === 'zone' ? 'Selected: zone' : 'Selected: border';
-      row.append(label, ...actions);
+      for (const [name, buttons] of groups) {
+        const g = document.createElement('div');
+        g.className = 'tool-group';
+        const label = document.createElement('span');
+        label.className = 'tool-label';
+        label.textContent = name;
+        const inner = document.createElement('div');
+        inner.className = 'tool-btns';
+        inner.append(...buttons);
+        g.append(label, inner);
+        row.append(g);
+      }
       tools.append(row);
     }
 
     const modes = document.createElement('div');
     modes.className = 'tool-modes';
+    const modeOn = m => st.mode === m || (m === 'drawZone' && st.mode === 'placeShape');
     modes.append(
-      btn('View', st.mode === 'view', goMode('view'), !hasBorder),
-      btn('Edit', st.mode === 'edit', goMode('edit'), !hasBorder),
-      btn('Add zone', st.mode === 'drawZone', goMode('drawZone'), !hasBorder),
+      btn('eye', 'View', { on: modeOn('view'), fn: goMode('view'), disabled: !hasBorder, text: true }),
+      btn('pencil', 'Edit', { on: modeOn('edit'), fn: goMode('edit'), disabled: !hasBorder, text: true }),
+      btn('plus', 'Add zone', { on: modeOn('drawZone'), fn: goMode('drawZone'), disabled: !hasBorder, text: true }),
     );
     tools.append(modes);
     const hints = {
       view: border.zones.length ? 'Tap a zone to see or edit its plants. Drag to pan, pinch to zoom.' : 'Tap “Add zone” to mark where you planted something.',
-      edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, drag orange points to reshape, drag a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Green squares are locked points; drag orange points, or a white dot to add a point. Use Lock/Unlock point to change this. Tap a zone to edit it.',
+      edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, drag the square corner handles to resize, drag orange points to reshape, drag a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Green squares are locked points; drag orange points, or a white dot to add a point. Tap a point, then the lock button, to lock it. Tap a zone to edit it.',
       drawBorder: 'Tap the corners of the border one by one, then Finish. (Tap the green first point to close.)',
-      drawZone: 'Tap the corners of the planted area, then Finish. With snap on, zones stay inside the border and cannot overlap other zones.',
+      drawZone: 'Pick a quick shape, or tap the corners of the planted area and press Finish. With snap on, zones stay inside the border and cannot overlap other zones.',
+      placeShape: 'Drag the shape to move it and drag the square corner handles to resize it. Press Place when it is where you want it.',
     };
     hint.textContent = hints[st.mode];
+  }
+
+  function startShape(kind) {
+    const b = bbox(border.points);
+    const w = Math.min(Math.max((b.maxX - b.minX) * 0.3, 40), b.maxX - b.minX);
+    const h = Math.min(Math.max((b.maxY - b.minY) * 0.3, 40), b.maxY - b.minY);
+    st.shape = { points: shapePoints(kind, centroid(border.points), w, h) };
+    st.mode = 'placeShape';
+    update();
+  }
+
+  function confirmShape() {
+    if (!zoneFits(st.shape.points, null)) { notify('This shape overlaps another zone or leaves the border. Move or resize it, or turn Snap off.'); return; }
+    addZone(st.shape.points);
+  }
+
+  function addZone(points) {
+    const zone = { id: uid(), name: '', light: '', water: '', points, plants: [] };
+    border.zones.push(zone);
+    st.draft = []; st.shape = null; st.mode = 'view'; save(); update();
+    zoneDialog(border, zone, update, true);
   }
 
   function toggleSnap() {
@@ -793,10 +895,7 @@ function openEditor(borderId) {
       save(); fit(); update();
     } else {
       if (!zoneFits(st.draft, null)) { notify('This zone overlaps another zone or leaves the border. Adjust the points, or turn Snap off.'); return; }
-      const zone = { id: uid(), name: '', light: '', water: '', points: st.draft, plants: [] };
-      border.zones.push(zone);
-      st.draft = []; st.mode = 'view'; save(); update();
-      zoneDialog(border, zone, update, true);
+      addZone(st.draft);
     }
   }
 
@@ -856,6 +955,18 @@ function openEditor(borderId) {
     }
     const pt = world(e);
     g = { type: 'pan', sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, moved: false, t: Date.now(), pt };
+    const holder = st.mode === 'placeShape' ? st.shape : st.mode === 'edit' ? selZone() : null;
+    if (holder) {
+      const hd = scaleHandles(holder.points).find(h => dpx(h, pt) < 16);
+      if (hd) {
+        Object.assign(g, { type: 'scale', holder, keep: true, backup: holder.points.map(p => ({ ...p })), anchor: hd.anchor, corner: hd.corner, off: { x: hd.x - hd.corner.x, y: hd.y - hd.corner.y } });
+        return;
+      }
+      if (st.mode === 'placeShape') {
+        if (pointInPolygon(pt, holder.points)) Object.assign(g, { type: 'move', holder, backup: holder.points.map(p => ({ ...p })) });
+        return;
+      }
+    }
     if (st.mode === 'edit') {
       const pts = selPts();
       const zone = selZone();
@@ -868,7 +979,7 @@ function openEditor(borderId) {
         pts.splice(mi + 1, 0, { x: (pts[mi].x + q.x) / 2, y: (pts[mi].y + q.y) / 2 });
         g.type = 'vertex'; g.i = mi + 1; st.selVertex = mi + 1; g.moved = true; renderTools(); render();
       } else if (zone && pointInPolygon(pt, zone.points)) {
-        g.type = 'move';
+        g.type = 'move'; g.holder = zone;
       }
     }
   });
@@ -897,8 +1008,17 @@ function openEditor(borderId) {
     } else if (g.type === 'move' && g.moved) {
       const p = world(e);
       const dx = p.x - g.pt.x, dy = p.y - g.pt.y;
-      const zone = selZone();
-      zone.points = g.backup.map(q => ({ x: q.x + dx, y: q.y + dy }));
+      g.holder.points = g.backup.map(q => ({ x: q.x + dx, y: q.y + dy }));
+      render();
+    } else if (g.type === 'scale') {
+      const p = world(e);
+      const factor = (now, anchor, corner) => {
+        const ext = corner - anchor;
+        if (Math.abs(ext) < 1) return 1;
+        return Math.max((now - anchor) / ext, 20 / Math.abs(ext));
+      };
+      const fx = factor(p.x - g.off.x, g.anchor.x, g.corner.x), fy = factor(p.y - g.off.y, g.anchor.y, g.corner.y);
+      g.holder.points = g.backup.map(q => ({ ...q, x: g.anchor.x + (q.x - g.anchor.x) * fx, y: g.anchor.y + (q.y - g.anchor.y) * fy }));
       render();
     } else if (g.type === 'pan' && g.moved) {
       const kk = k();
@@ -916,8 +1036,8 @@ function openEditor(borderId) {
     if (ptrs.size > 0) { if (g) g.moved = true; return; }
     const done = g; g = null;
     if (!done) return;
-    if (done.type === 'vertex' || (done.type === 'move' && done.moved)) {
-      const zone = selZone();
+    if (done.type === 'vertex' || done.type === 'scale' || (done.type === 'move' && done.moved)) {
+      const zone = st.mode === 'edit' ? selZone() : null;
       if (zone && !zoneFits(zone.points, zone.id)) {
         zone.points = done.backup;
         notify('A zone cannot overlap another zone or leave the border (turn Snap off to allow it).');
@@ -945,6 +1065,7 @@ function openEditor(borderId) {
   }
 
   function onTap(pt) {
+    if (st.mode === 'placeShape') return;
     if (st.mode === 'drawBorder' || st.mode === 'drawZone') {
       if (st.draft.length >= 3 && dpx(st.draft[0], pt) < 16) return finishDraft();
       let p = pt;
@@ -1039,7 +1160,7 @@ function downscale(file, max) {
 // ---------- zone / plants popup ----------
 function zoneDialog(border, zone, onClose, isNew) {
   const today = new Date().toISOString().slice(0, 10);
-  const newEntry = () => ({ id: uid(), plantId: '', planted: today, note: '' });
+  const newEntry = () => ({ id: uid(), plantId: '', planted: today, note: '', count: 0 });
   const plantOptions = sel => '<option value="">Choose a plant…</option>' +
     [...data.plants].sort(byName).map(p => `<option value="${p.id}"${p.id === sel ? ' selected' : ''}>${esc(p.name)}</option>`).join('') +
     '<option value="__new__">＋ Create new plant…</option>';
@@ -1049,8 +1170,9 @@ function zoneDialog(border, zone, onClose, isNew) {
     <div class="plant" data-id="${e.id}">
       <label>Plant</label><select class="p-plant">${plantOptions(e.plantId)}</select>
       ${p ? `<div class="muted" style="margin-top:4px"><span class="dot" style="background:${esc(p.color)}"></span>${esc(plantSummary(p))}</div>` : ''}
-      <label>Planted on</label><input type="date" class="p-date" value="${esc(e.planted)}">
-      <label>Note (optional)</label><input type="text" class="p-note" value="${esc(e.note)}" placeholder="e.g. 20 bulbs">
+      <div class="row"><div class="grow"><label>Amount planted</label><input type="number" inputmode="numeric" min="0" step="1" class="p-count" value="${e.count ? esc(e.count) : ''}" placeholder="e.g. 20 bulbs"></div>
+      <div class="grow"><label>Planted on</label><input type="date" class="p-date" value="${esc(e.planted)}"></div></div>
+      <label>Note (optional)</label><input type="text" class="p-note" value="${esc(e.note)}">
       <div class="dlg-btns" style="margin-top:6px">${p ? '<button class="btn alt p-edit">Edit plant</button>' : ''}<button class="btn danger p-del">Remove</button></div>
     </div>`;
   };
@@ -1061,6 +1183,7 @@ function zoneDialog(border, zone, onClose, isNew) {
     id: el.dataset.id,
     plantId: el.querySelector('.p-plant').value === '__new__' ? '' : el.querySelector('.p-plant').value,
     planted: el.querySelector('.p-date').value,
+    count: Math.max(0, Math.floor(+el.querySelector('.p-count').value) || 0),
     note: el.querySelector('.p-note').value.trim(),
   }));
 
