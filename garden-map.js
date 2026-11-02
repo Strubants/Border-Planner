@@ -75,6 +75,48 @@ function featureInsideParcel(geometry, parcelPolygons) {
   });
 }
 
+// Aerial tiles covering `view` ({x, y (SVG, = -north), w, h} in metres) at roughly `desiredResolution` metres per pixel.
+export function orthoTiles(view, desiredResolution) {
+  const tileCount = matrix => {
+    const size = TILE_SIZE * matrix.resolution;
+    const north = -view.y, south = -(view.y + view.h);
+    const minCol = Math.max(0, Math.floor((view.x - TILE_ORIGIN_X) / size));
+    const maxCol = Math.min(matrix.width - 1, Math.floor((view.x + view.w - TILE_ORIGIN_X) / size));
+    const minRow = Math.max(0, Math.floor((TILE_ORIGIN_Y - north) / size));
+    const maxRow = Math.min(matrix.width - 1, Math.floor((TILE_ORIGIN_Y - south) / size));
+    return Math.max(0, maxCol - minCol + 1) * Math.max(0, maxRow - minRow + 1);
+  };
+  const availableMatrices = TILE_MATRICES.filter(matrix => tileCount(matrix) <= 16);
+  const matrix = (availableMatrices.length ? availableMatrices : TILE_MATRICES).reduce((best, candidate) =>
+    Math.abs(Math.log(candidate.resolution / desiredResolution)) <
+    Math.abs(Math.log(best.resolution / desiredResolution)) ? candidate : best);
+  const tileWorldSize = TILE_SIZE * matrix.resolution;
+  const west = view.x, east = view.x + view.w;
+  const north = -view.y, south = -(view.y + view.h);
+  const minCol = Math.max(0, Math.floor((west - TILE_ORIGIN_X) / tileWorldSize));
+  const maxCol = Math.min(matrix.width - 1, Math.floor((east - TILE_ORIGIN_X) / tileWorldSize));
+  const minRow = Math.max(0, Math.floor((TILE_ORIGIN_Y - north) / tileWorldSize));
+  const maxRow = Math.min(matrix.width - 1, Math.floor((TILE_ORIGIN_Y - south) / tileWorldSize));
+  const images = [];
+  for (let row = minRow; row <= maxRow; row++) {
+    for (let col = minCol; col <= maxCol; col++) {
+      const left = TILE_ORIGIN_X + col * tileWorldSize;
+      const top = TILE_ORIGIN_Y - row * tileWorldSize;
+      const query = new URLSearchParams({
+        SERVICE: 'WMTS', VERSION: '1.0.0', REQUEST: 'GetTile',
+        LAYER: 'ofw', STYLE: 'default', FORMAT: 'image/png',
+        TILEMATRIXSET: 'BPL72VL', TILEMATRIX: matrix.id,
+        TILEROW: String(row), TILECOL: String(col),
+      });
+      images.push(`<image href="${ORTHO_URL}?${query}" x="${left}" y="${-top}" width="${tileWorldSize}" height="${tileWorldSize}" preserveAspectRatio="none"/>`);
+    }
+  }
+  return {
+    key: `${matrix.id}/${minCol}/${maxCol}/${minRow}/${maxRow}`,
+    markup: images.join(''),
+  };
+}
+
 export function mountGardenMap(container, garden, { borders, plants, onChange }) {
   const planning = gardenPlanning(garden);
   const bounds = parcelBounds(garden);
@@ -292,45 +334,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   }
 
   function tileImages() {
-    const desiredResolution = view.w / Math.max(svg.clientWidth, 1);
-    const tileCount = matrix => {
-      const size = TILE_SIZE * matrix.resolution;
-      const north = -view.y, south = -(view.y + view.h);
-      const minCol = Math.max(0, Math.floor((view.x - TILE_ORIGIN_X) / size));
-      const maxCol = Math.min(matrix.width - 1, Math.floor((view.x + view.w - TILE_ORIGIN_X) / size));
-      const minRow = Math.max(0, Math.floor((TILE_ORIGIN_Y - north) / size));
-      const maxRow = Math.min(matrix.width - 1, Math.floor((TILE_ORIGIN_Y - south) / size));
-      return Math.max(0, maxCol - minCol + 1) * Math.max(0, maxRow - minRow + 1);
-    };
-    const availableMatrices = TILE_MATRICES.filter(matrix => tileCount(matrix) <= 16);
-    const matrix = (availableMatrices.length ? availableMatrices : TILE_MATRICES).reduce((best, candidate) =>
-      Math.abs(Math.log(candidate.resolution / desiredResolution)) <
-      Math.abs(Math.log(best.resolution / desiredResolution)) ? candidate : best);
-    const tileWorldSize = TILE_SIZE * matrix.resolution;
-    const west = view.x, east = view.x + view.w;
-    const north = -view.y, south = -(view.y + view.h);
-    const minCol = Math.max(0, Math.floor((west - TILE_ORIGIN_X) / tileWorldSize));
-    const maxCol = Math.min(matrix.width - 1, Math.floor((east - TILE_ORIGIN_X) / tileWorldSize));
-    const minRow = Math.max(0, Math.floor((TILE_ORIGIN_Y - north) / tileWorldSize));
-    const maxRow = Math.min(matrix.width - 1, Math.floor((TILE_ORIGIN_Y - south) / tileWorldSize));
-    const images = [];
-    for (let row = minRow; row <= maxRow; row++) {
-      for (let col = minCol; col <= maxCol; col++) {
-        const left = TILE_ORIGIN_X + col * tileWorldSize;
-        const top = TILE_ORIGIN_Y - row * tileWorldSize;
-        const query = new URLSearchParams({
-          SERVICE: 'WMTS', VERSION: '1.0.0', REQUEST: 'GetTile',
-          LAYER: 'ofw', STYLE: 'default', FORMAT: 'image/png',
-          TILEMATRIXSET: 'BPL72VL', TILEMATRIX: matrix.id,
-          TILEROW: String(row), TILECOL: String(col),
-        });
-        images.push(`<image href="${ORTHO_URL}?${query}" x="${left}" y="${-top}" width="${tileWorldSize}" height="${tileWorldSize}" preserveAspectRatio="none"/>`);
-      }
-    }
-    return {
-      key: `${matrix.id}/${minCol}/${maxCol}/${minRow}/${maxRow}`,
-      markup: images.join(''),
-    };
+    return orthoTiles(view, view.w / Math.max(svg.clientWidth, 1));
   }
 
   function draw() {
@@ -768,11 +772,23 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     const border = borders.find(item => item.id === borderSelect.value);
     if (!border) return;
     const id = uid();
-    planning.placements.push({ id, borderId: border.id, x: point.x, y: point.y, rotation: 0 });
+    // A border drawn over the satellite image already knows where it is.
+    const geo = border.geo?.gardenId === garden.id ? border.geo : null;
+    if (geo) {
+      const xs = border.points.map(p => p.x), ys = border.points.map(p => p.y);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const a = (geo.rot || 0) * Math.PI / 180;
+      const dx = 0.01 * (cx * Math.cos(a) - cy * Math.sin(a)), dy = 0.01 * (cx * Math.sin(a) + cy * Math.cos(a));
+      planning.placements.push({ id, borderId: border.id, x: geo.x + dx, y: geo.y - dy, rotation: geo.rot || 0 });
+    } else {
+      planning.placements.push({ id, borderId: border.id, x: point.x, y: point.y, rotation: 0 });
+    }
     state.selectedPlacement = id;
     renderPlacementControls();
     state.mode = 'pan'; svg.classList.remove('placing');
-    status.textContent = `${border.name} placed at its measured size. Drag it to adjust its position.`;
+    status.textContent = geo
+      ? `${border.name} placed where you drew it on the satellite image.`
+      : `${border.name} placed at its measured size. Drag it to adjust its position.`;
     draw(); onChange();
   }
 

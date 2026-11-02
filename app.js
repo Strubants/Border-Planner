@@ -1,6 +1,6 @@
 import { dist, polygonArea, centroid, pointInPolygon, bbox, setEdgeLength, rectangle, ellipse, triangle, closestOnPolygon, distToPolygon, polygonsOverlap, insideOrOn } from './geometry.js';
 import { loadData, saveData, uid } from './store.js';
-import { mountGardenMap } from './garden-map.js';
+import { mountGardenMap, orthoTiles } from './garden-map.js';
 import * as cloud from './cloud-sync.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -616,7 +616,15 @@ const ICONS = Object.fromEntries(Object.entries({
   rect: '<rect x="4" y="6" width="16" height="12" rx="1"/>',
   oval: '<ellipse cx="12" cy="12" rx="9" ry="6"/>',
   triangle: '<path d="M12 4l9 16H3z"/>',
+  rotL: '<path d="M4 12a8 8 0 108-8H8"/><path d="M11 1L8 4l3 3"/>',
+  rotR: '<path d="M20 12a8 8 0 11-8-8h4"/><path d="M13 1l3 3-3 3"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
 }).map(([k, v]) => [k, `<svg viewBox="0 0 24 24" aria-hidden="true">${v}</svg>`]));
+
+function rotatePoints(points, deg, pivot) {
+  const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  return points.map(p => ({ ...p, x: pivot.x + (p.x - pivot.x) * c - (p.y - pivot.y) * s, y: pivot.y + (p.x - pivot.x) * s + (p.y - pivot.y) * c }));
+}
 
 function shapePoints(kind, c, w, h) {
   const hw = w / 2, hh = h / 2;
@@ -634,9 +642,10 @@ function openEditor(borderId) {
     actions: [{ label: '⋮', onClick: () => borderMenu(border) }],
   });
   main.innerHTML = `
-    <div id="stage"><svg id="svg"></svg><div id="hint"></div></div>
+    <div id="stage"><svg id="sat"></svg><svg id="svg"></svg><div id="hint"></div>
+      <button type="button" id="sat-toggle" aria-pressed="false">${ICONS.layers}<span>Satellite</span></button><div id="sat-note"></div></div>
     <div class="toolbar" id="tools"></div>`;
-  const svg = $('svg'), hint = $('hint'), tools = $('tools');
+  const svg = $('svg'), hint = $('hint'), tools = $('tools'), satSvg = $('sat'), satToggle = $('sat-toggle'), stage = $('stage');
 
   const st = {
     mode: border.points.length ? 'view' : 'drawBorder', // view | edit | drawBorder | drawZone
@@ -689,30 +698,112 @@ function openEditor(borderId) {
     return { x: st.vb.x + (e.clientX - r.left) * kk, y: st.vb.y + (e.clientY - r.top) * kk };
   };
 
-  // Square resize handles just outside each corner of the shape's bounding box.
-  function scaleHandles(points) {
-    const b = bbox(points), off = 22 * k();
-    return [[b.minX, b.minY, -1, -1], [b.maxX, b.minY, 1, -1], [b.maxX, b.maxY, 1, 1], [b.minX, b.maxY, -1, 1]].map(([x, y, sx, sy]) => ({
-      corner: { x, y }, anchor: { x: sx < 0 ? b.maxX : b.minX, y: sy < 0 ? b.maxY : b.minY }, x: x + sx * off, y: y + sy * off,
-    }));
+  // Oriented frame of a shape: resize handles on the corners of its (rotated) box plus a rotate handle above it.
+  function shapeFrame(points, rot = 0) {
+    const pivot = centroid(points), b = bbox(rotatePoints(points, -rot, pivot)), off = 22 * k();
+    const back = (x, y) => rotatePoints([{ x, y }], rot, pivot)[0];
+    const cx = (b.minX + b.maxX) / 2;
+    return {
+      pivot,
+      box: [back(b.minX, b.minY), back(b.maxX, b.minY), back(b.maxX, b.maxY), back(b.minX, b.maxY)],
+      handles: [[b.minX, b.minY, -1, -1], [b.maxX, b.minY, 1, -1], [b.maxX, b.maxY, 1, 1], [b.minX, b.maxY, -1, 1]].map(([x, y, sx, sy]) => ({
+        corner: back(x, y), ...back(x + sx * off, y + sy * off),
+        uc: { x, y }, ua: { x: sx < 0 ? b.maxX : b.minX, y: sy < 0 ? b.maxY : b.minY }, uoff: { x: sx * off, y: sy * off },
+      })),
+      rotHandle: { from: back(cx, b.minY), ...back(cx, b.minY - off * 1.8) },
+    };
   }
+
+  // ----- satellite background (Flemish aerial imagery anchored to the garden address) -----
+  const gardenOf = () => data.gardens.find(x => x.id === data.activeGardenId) || data.gardens[0] || null;
+  const boxCentre = () => {
+    const b = bbox(border.points.length ? border.points : [{ x: 0, y: 0 }, { x: 500, y: 350 }]);
+    return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
+  };
+  // svg (Lambert, y flipped) = (geo.x, -geo.y) + 0.01 * R(rot) * local
+  const resolveGeo = () => {
+    const garden = gardenOf();
+    if (!garden) return null;
+    const c = boxCentre();
+    const pl = garden.planning?.placements?.find(p => p.borderId === border.id);
+    if (pl) {
+      const a = (pl.rotation || 0) * Math.PI / 180;
+      return border.geo = { gardenId: garden.id, rot: pl.rotation || 0, x: pl.x - 0.01 * (c.x * Math.cos(a) - c.y * Math.sin(a)), y: pl.y + 0.01 * (c.x * Math.sin(a) + c.y * Math.cos(a)) };
+    }
+    if (border.geo?.gardenId === garden.id) return border.geo;
+    const pc = garden.parcel?.center;
+    if (!pc) return null;
+    return border.geo = { gardenId: garden.id, rot: 0, x: pc[0] - 0.01 * c.x, y: pc[1] + 0.01 * c.y };
+  };
+  let geo = border.sat || border.geo ? resolveGeo() : null;
+  let satKey = '';
+
+  // Keeps a border that is already placed in My Garden in the same spot when its outline changes.
+  function keepPlacement() {
+    const garden = gardenOf();
+    const pl = garden?.planning?.placements?.find(p => p.borderId === border.id);
+    if (!pl || !geo || geo.gardenId !== garden.id || border.points.length < 3) return;
+    const c = boxCentre(), a = geo.rot * Math.PI / 180;
+    const x = geo.x + 0.01 * (c.x * Math.cos(a) - c.y * Math.sin(a)), y = geo.y - 0.01 * (c.x * Math.sin(a) + c.y * Math.cos(a));
+    if (Math.abs(x - pl.x) > 1e-6 || Math.abs(y - pl.y) > 1e-6) { pl.x = x; pl.y = y; save(); }
+  }
+
+  function renderSat(viewBox, widthPx) {
+    const on = !!(border.sat && geo);
+    stage.classList.toggle('sat-on', on);
+    satToggle.classList.toggle('on', on);
+    satToggle.setAttribute('aria-pressed', String(on));
+    satSvg.style.display = on ? '' : 'none';
+    $('sat-note').textContent = on ? 'Imagery © Digitaal Vlaanderen' : '';
+    if (!on) { satKey = ''; satSvg.innerHTML = ''; return; }
+    satSvg.setAttribute('viewBox', viewBox.join(' '));
+    const [vx, vy, vw, vh] = viewBox, a = geo.rot * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    const world = [[vx, vy], [vx + vw, vy], [vx + vw, vy + vh], [vx, vy + vh]].map(([x, y]) => ({ x: geo.x + 0.01 * (x * c - y * s), y: -geo.y + 0.01 * (x * s + y * c) }));
+    const minX = Math.min(...world.map(p => p.x)), maxX = Math.max(...world.map(p => p.x));
+    const minY = Math.min(...world.map(p => p.y)), maxY = Math.max(...world.map(p => p.y));
+    const padX = (maxX - minX) * 0.25, padY = (maxY - minY) * 0.25;
+    const tiles = orthoTiles({ x: minX - padX, y: minY - padY, w: maxX - minX + 2 * padX, h: maxY - minY + 2 * padY }, 0.01 * vw / Math.max(widthPx, 1));
+    let g = satSvg.querySelector('g');
+    if (!g) { g = document.createElementNS('http://www.w3.org/2000/svg', 'g'); satSvg.append(g); satKey = ''; }
+    g.setAttribute('transform', `scale(100) rotate(${-geo.rot}) translate(${-geo.x} ${geo.y})`);
+    if (tiles.key !== satKey) {
+      satKey = tiles.key;
+      const parcel = (gardenOf()?.parcel?.polygons || []).flatMap(rings => rings.map(ring => `<path d="M${ring.map(q => `${q[0]} ${-q[1]}`).join('L')}Z" fill="none" stroke="#ffd54a" stroke-width="2" stroke-dasharray="7 5" vector-effect="non-scaling-stroke"/>`)).join('');
+      g.innerHTML = tiles.markup + parcel;
+    }
+  }
+
+  satToggle.onclick = () => {
+    if (!border.sat) {
+      geo = resolveGeo();
+      if (!geo) { notify('Search your address in the My Garden tab first. The satellite image is placed using your garden address.'); return; }
+    }
+    border.sat = !border.sat;
+    if (!border.sat) delete border.sat;
+    save(); update();
+  };
 
   function render() {
     const r = rect(), kk = k();
     if (!r.width || !r.height) return;
     const { vb } = st;
-    svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vb.w * r.height / r.width}`);
+    const vh = vb.w * r.height / r.width;
+    svg.setAttribute('viewBox', `${vb.x} ${vb.y} ${vb.w} ${vh}`);
+    renderSat([vb.x, vb.y, vb.w, vh], r.width);
+    const satOn = !!(border.sat && geo);
     const px = n => n * kk;
     const poly = pts => pts.map(p => `${p.x},${p.y}`).join(' ');
     let s = '';
     const minor = vb.w < 600 ? 10 : vb.w < 2500 ? 50 : 100;
-    s += `<defs><pattern id="g" width="${minor}" height="${minor}" patternUnits="userSpaceOnUse"><path d="M${minor} 0H0V${minor}" fill="none" stroke="#dfe7d6" stroke-width="${px(1)}"/></pattern>
+    if (!satOn) {
+      s += `<defs><pattern id="g" width="${minor}" height="${minor}" patternUnits="userSpaceOnUse"><path d="M${minor} 0H0V${minor}" fill="none" stroke="#dfe7d6" stroke-width="${px(1)}"/></pattern>
       <pattern id="g2" width="100" height="100" patternUnits="userSpaceOnUse"><path d="M100 0H0V100" fill="none" stroke="#c5d1ba" stroke-width="${px(1.2)}"/></pattern></defs>`;
-    s += `<rect x="${vb.x - 1e4}" y="${vb.y - 1e4}" width="2e4" height="2e4" fill="url(#g)"/><rect x="${vb.x - 1e4}" y="${vb.y - 1e4}" width="2e4" height="2e4" fill="url(#g2)"/>`;
+      s += `<rect x="${vb.x - 1e4}" y="${vb.y - 1e4}" width="2e4" height="2e4" fill="url(#g)"/><rect x="${vb.x - 1e4}" y="${vb.y - 1e4}" width="2e4" height="2e4" fill="url(#g2)"/>`;
+    }
 
     if (border.points.length >= 3) {
       const bsel = st.mode === 'edit' && st.sel.kind === 'border';
-      s += `<polygon points="${poly(border.points)}" fill="#e3edd2" stroke="${bsel ? '#d6730a' : '#5b7a43'}" stroke-width="${px(bsel ? 3 : 2.5)}" stroke-linejoin="round"/>`;
+      s += `<polygon points="${poly(border.points)}" fill="#e3edd2" fill-opacity="${satOn ? .2 : 1}" stroke="${bsel ? '#d6730a' : satOn ? '#fff' : '#5b7a43'}" stroke-width="${px(bsel ? 3 : 2.5)}" stroke-linejoin="round"/>`;
     }
     for (const z of border.zones) {
       const col = z.plants.map(rp).find(p => p.color)?.color ?? '#9aa39a';
@@ -743,12 +834,14 @@ function openEditor(borderId) {
     }
     const holder = st.mode === 'placeShape' ? st.shape : st.mode === 'edit' ? selZone() : null;
     if (holder) {
-      const bb = bbox(holder.points);
-      s += `<rect x="${bb.minX}" y="${bb.minY}" width="${bb.maxX - bb.minX}" height="${bb.maxY - bb.minY}" fill="none" stroke="#d6730a" stroke-width="${px(1)}" stroke-dasharray="${px(4)}" opacity=".7"/>`;
-      for (const h of scaleHandles(holder.points)) {
+      const fr = shapeFrame(holder.points, holder.rot || 0);
+      s += `<polygon points="${poly(fr.box)}" fill="none" stroke="#d6730a" stroke-width="${px(1)}" stroke-dasharray="${px(4)}" opacity=".7"/>`;
+      for (const h of fr.handles) {
         const r = px(8);
-        s += `<line x1="${h.corner.x}" y1="${h.corner.y}" x2="${h.x}" y2="${h.y}" stroke="#d6730a" stroke-width="${px(1)}" opacity=".7"/><rect x="${h.x - r}" y="${h.y - r}" width="${2 * r}" height="${2 * r}" rx="${px(2)}" fill="#fff" stroke="#d6730a" stroke-width="${px(2)}"/>`;
+        s += `<line x1="${h.corner.x}" y1="${h.corner.y}" x2="${h.x}" y2="${h.y}" stroke="#d6730a" stroke-width="${px(1)}" opacity=".7"/><rect x="${h.x - r}" y="${h.y - r}" width="${2 * r}" height="${2 * r}" rx="${px(2)}" fill="#fff" stroke="#d6730a" stroke-width="${px(2)}" transform="rotate(${holder.rot || 0} ${h.x} ${h.y})"/>`;
       }
+      const rh = fr.rotHandle;
+      s += `<line x1="${rh.from.x}" y1="${rh.from.y}" x2="${rh.x}" y2="${rh.y}" stroke="#d6730a" stroke-width="${px(1)}" opacity=".7"/><circle cx="${rh.x}" cy="${rh.y}" r="${px(10)}" fill="#fff" stroke="#d6730a" stroke-width="${px(2)}"/><path d="M${rh.x - px(4)} ${rh.y + px(1)}a${px(4)} ${px(4)} 0 1 1 ${px(2)} ${px(3)}" fill="none" stroke="#d6730a" stroke-width="${px(1.6)}" stroke-linecap="round"/>`;
     }
     // handles
     if (st.mode === 'edit') {
@@ -795,6 +888,7 @@ function openEditor(borderId) {
     if (st.mode === 'placeShape') {
       groups.push(
         ['Place shape', [btn('check', 'Place', { fn: confirmShape, kind: 'primary', text: true }), btn('x', 'Cancel', { fn: goMode('drawZone') })]],
+        ['Rotate', [btn('rotL', 'Rotate 15° left', { fn: () => rotateBy(-15) }), btn('rotR', 'Rotate 15° right', { fn: () => rotateBy(15) })]],
         ['Options', [snapBtn()]],
       );
     } else if (drawing) {
@@ -820,7 +914,8 @@ function openEditor(borderId) {
         pointBtns.push(btn(fixed ? 'unlock' : 'lock', fixed ? 'Unlock point' : 'Lock point', { on: fixed, fn: toggleLock, disabled: st.selVertex < 0 }));
       }
       groups.push(['Point', pointBtns]);
-      groups.push(['Shape', [btn('ruler', 'Edge lengths', { fn: lengthsDialog }), ...(isZone ? [snapBtn()] : [])]]);
+      groups.push(['Shape', [btn('ruler', 'Edge lengths', { fn: lengthsDialog }), ...(isZone ? [
+        btn('rotL', 'Rotate 15° left', { fn: () => rotateBy(-15) }), btn('rotR', 'Rotate 15° right', { fn: () => rotateBy(15) }), snapBtn()] : [])]]);
       if (isZone) {
         groups.push(['Zone', [
           btn('details', 'Zone details and plants', { fn: () => zoneDialog(border, selZone(), update, false) }),
@@ -865,10 +960,10 @@ function openEditor(borderId) {
     tools.append(modes);
     const hints = {
       view: border.zones.length ? 'Tap a zone to see or edit its plants. Drag to pan, pinch to zoom.' : 'Tap “Add zone” to mark where you planted something.',
-      edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, drag the square corner handles to resize, drag orange points to reshape, drag a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Green squares are locked points; drag orange points, or a white dot to add a point. Tap a point, then the lock button, to lock it. Tap a zone to edit it.',
+      edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, the square handles to resize, the round handle on top to rotate, orange points to reshape, a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Green squares are locked points; drag orange points, or a white dot to add a point. Tap a point, then the lock button, to lock it. Tap a zone to edit it.',
       drawBorder: 'Tap the corners of the border one by one, then Finish. (Tap the green first point to close.)',
       drawZone: 'Pick a quick shape, or tap the corners of the planted area and press Finish. With snap on, zones stay inside the border and cannot overlap other zones.',
-      placeShape: 'Drag the shape to move it and drag the square corner handles to resize it. Press Place when it is where you want it.',
+      placeShape: 'Drag the shape to move it, the square handles to resize it and the round handle on top to rotate it (or use the rotate buttons). Press Place when it is where you want it.',
     };
     hint.textContent = hints[st.mode];
   }
@@ -884,11 +979,23 @@ function openEditor(borderId) {
 
   function confirmShape() {
     if (!zoneFits(st.shape.points, null)) { notify('This shape overlaps another zone or leaves the border. Move or resize it, or turn Snap off.'); return; }
-    addZone(st.shape.points);
+    addZone(st.shape.points, st.shape.rot);
   }
 
-  function addZone(points) {
+  function rotateBy(deg) {
+    const h = st.mode === 'placeShape' ? st.shape : selZone();
+    if (!h) return;
+    const pts = rotatePoints(h.points, deg, centroid(h.points));
+    if (h !== st.shape && !zoneFits(pts, h.id)) { notify('Rotating would make the zone overlap another zone or leave the border (turn Snap off to allow it).'); return; }
+    h.points = pts;
+    h.rot = (((h.rot || 0) + deg) % 360 + 360) % 360;
+    if (h !== st.shape) save();
+    update();
+  }
+
+  function addZone(points, rot) {
     const zone = { id: uid(), name: '', light: '', water: '', points, plants: [] };
+    if (rot) zone.rot = rot;
     border.zones.push(zone);
     st.draft = []; st.shape = null; st.mode = 'view'; save(); update();
     zoneDialog(border, zone, update, true);
@@ -900,7 +1007,7 @@ function openEditor(borderId) {
     update();
   }
 
-  function update() { renderTools(); render(); }
+  function update() { keepPlacement(); renderTools(); render(); }
 
   function finishDraft() {
     if (st.draft.length < 3) return;
@@ -973,9 +1080,15 @@ function openEditor(borderId) {
     g = { type: 'pan', sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, moved: false, t: Date.now(), pt };
     const holder = st.mode === 'placeShape' ? st.shape : st.mode === 'edit' ? selZone() : null;
     if (holder) {
-      const hd = scaleHandles(holder.points).find(h => dpx(h, pt) < 16);
+      const fr = shapeFrame(holder.points, holder.rot || 0);
+      const rh = fr.rotHandle;
+      if (dpx(rh, pt) < 18) {
+        Object.assign(g, { type: 'rotate', holder, keep: true, pivot: fr.pivot, rot0: holder.rot || 0, a0: Math.atan2(pt.y - fr.pivot.y, pt.x - fr.pivot.x), backup: holder.points.map(p => ({ ...p })) });
+        return;
+      }
+      const hd = fr.handles.find(h => dpx(h, pt) < 16);
       if (hd) {
-        Object.assign(g, { type: 'scale', holder, keep: true, backup: holder.points.map(p => ({ ...p })), anchor: hd.anchor, corner: hd.corner, off: { x: hd.x - hd.corner.x, y: hd.y - hd.corner.y } });
+        Object.assign(g, { type: 'scale', holder, keep: true, backup: holder.points.map(p => ({ ...p })), pivot: fr.pivot, rot: holder.rot || 0, uc: hd.uc, ua: hd.ua, uoff: hd.uoff });
         return;
       }
       if (st.mode === 'placeShape') {
@@ -1026,15 +1139,25 @@ function openEditor(borderId) {
       const dx = p.x - g.pt.x, dy = p.y - g.pt.y;
       g.holder.points = g.backup.map(q => ({ x: q.x + dx, y: q.y + dy }));
       render();
-    } else if (g.type === 'scale') {
+    } else if (g.type === 'rotate') {
       const p = world(e);
+      let r = ((g.rot0 + (Math.atan2(p.y - g.pivot.y, p.x - g.pivot.x) - g.a0) * 180 / Math.PI) % 360 + 360) % 360;
+      const snapped = Math.round(r / 15) * 15;
+      if (Math.abs(snapped - r) < 4) r = snapped % 360;
+      g.holder.points = rotatePoints(g.backup, r - g.rot0, g.pivot);
+      g.holder.rot = r;
+      g.moved = true;
+      render();
+    } else if (g.type === 'scale') {
+      const u = rotatePoints([world(e)], -g.rot, g.pivot)[0];
       const factor = (now, anchor, corner) => {
         const ext = corner - anchor;
         if (Math.abs(ext) < 1) return 1;
         return Math.max((now - anchor) / ext, 20 / Math.abs(ext));
       };
-      const fx = factor(p.x - g.off.x, g.anchor.x, g.corner.x), fy = factor(p.y - g.off.y, g.anchor.y, g.corner.y);
-      g.holder.points = g.backup.map(q => ({ ...q, x: g.anchor.x + (q.x - g.anchor.x) * fx, y: g.anchor.y + (q.y - g.anchor.y) * fy }));
+      const fx = factor(u.x - g.uoff.x, g.ua.x, g.uc.x), fy = factor(u.y - g.uoff.y, g.ua.y, g.uc.y);
+      const scaled = rotatePoints(g.backup, -g.rot, g.pivot).map(q => ({ ...q, x: g.ua.x + (q.x - g.ua.x) * fx, y: g.ua.y + (q.y - g.ua.y) * fy }));
+      g.holder.points = rotatePoints(scaled, g.rot, g.pivot);
       render();
     } else if (g.type === 'pan' && g.moved) {
       const kk = k();
@@ -1052,12 +1175,13 @@ function openEditor(borderId) {
     if (ptrs.size > 0) { if (g) g.moved = true; return; }
     const done = g; g = null;
     if (!done) return;
-    if (done.type === 'vertex' || done.type === 'scale' || (done.type === 'move' && done.moved)) {
+    if (done.type === 'vertex' || done.type === 'scale' || (done.type === 'move' && done.moved) || (done.type === 'rotate' && done.moved)) {
       const zone = st.mode === 'edit' ? selZone() : null;
       if (zone && !zoneFits(zone.points, zone.id)) {
         zone.points = done.backup;
+        if (done.type === 'rotate') zone.rot = done.rot0;
         notify('A zone cannot overlap another zone or leave the border (turn Snap off to allow it).');
-      }
+      } else if (zone && done.type === 'vertex') delete zone.rot;
       save(); update(); return;
     }
     if (!done.moved && !done.keep && e.type === 'pointerup') onTap(done.pt);

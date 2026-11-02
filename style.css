@@ -172,7 +172,7 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
   .garden-rotation-controls { gap: 5px; }
   .garden-rotation-controls .garden-turn { padding: 7px 8px; white-space: nowrap; }
 }
-@media (max-width: 520px) {
+@media (max-width: 520px), (pointer: coarse) {
   body:has(.garden-page .garden-workspace) > header,
   body:has(.garden-page .garden-workspace) > nav { display: none; }
   #main:has(.garden-page .garden-workspace) {
@@ -277,7 +277,13 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
 
 /* editor */
 #stage { flex: 1; position: relative; min-height: 0; background: #f4f7ef; }
-#svg { width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+#svg { position: relative; width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+#sat { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#stage.sat-on { background: #20281f; }
+#sat-toggle { position: absolute; right: 8px; bottom: 8px; display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.94); font-size: .82rem; box-shadow: 0 1px 6px rgba(0,0,0,.2); }
+#sat-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#sat-toggle.on { background: #2f6b3a; color: #fff; border-color: #2f6b3a; }
+#sat-note { position: absolute; left: 8px; bottom: 8px; max-width: 60%; font-size: .68rem; color: #fff; text-shadow: 0 0 3px #000; pointer-events: none; }
 .toolbar { background: #fff; border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
 .toolbar button { font-weight: 600; color: #1d2a1f; }
 .toolbar button:disabled { opacity: .4; }
