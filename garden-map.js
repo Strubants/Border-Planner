@@ -968,7 +968,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       }
     } else if (gesture.type === 'move-border') {
       onChange();
-      status.textContent = 'Border moved.';
     }
   };
   svg.addEventListener('pointerup', endGesture);
