@@ -2,6 +2,7 @@ import { dist, polygonArea, centroid, pointInPolygon, bbox, setEdgeLength, close
 import { loadData, saveData, uid } from './store.js';
 import { mountGardenMap, orthoTiles } from './garden-map.js';
 import * as cloud from './cloud-sync.js';
+import { open3D } from './view3d.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const $ = id => document.getElementById(id);
@@ -1247,6 +1248,7 @@ function borderMenu(border) {
     <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
       <button class="btn alt" id="m-rename">Rename</button>
       <button class="btn alt" id="m-photo">${border.photo ? 'View / replace photo' : 'Add photo'}</button>
+      <button class="btn alt" id="m-3d">3D view</button>
       <button class="btn alt" id="m-cal">Colour calendar</button>
       <button class="btn danger" id="m-del">Delete border</button>
       <button class="btn alt" id="m-close">Close</button>
@@ -1265,6 +1267,10 @@ function borderMenu(border) {
       });
     };
     d.querySelector('#m-photo').onclick = () => photoDialog(border);
+    d.querySelector('#m-3d').onclick = () => {
+      closeDialog();
+      open3D({ border, plantsOf: z => z.plants.map(e => ({ ...rp(e), count: e.count })) });
+    };
     d.querySelector('#m-cal').onclick = () => calendarDialog([border]);
     d.querySelector('#m-del').onclick = async () => {
       if (await ask(`Delete “${border.name}” and everything in it?`)) {
