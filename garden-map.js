@@ -870,7 +870,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         renderPlacementControls();
       }
     } else {
-      state.gesture = { type: 'pan', pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: view.x, y: view.y };
+      state.gesture = { type: 'pan', tap: true, pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY, x: view.x, y: view.y };
     }
     draw();
   });
@@ -958,6 +958,13 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       if (event.type === 'pointerup') {
         updateOutlineControls();
         onChange();
+      }
+    } else if (gesture.type === 'pan') {
+      const tapped = gesture.tap && event.type === 'pointerup' && Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8;
+      if (tapped && state.selectedPlacement) {
+        state.selectedPlacement = null;
+        renderPlacementControls();
+        draw();
       }
     } else if (gesture.type === 'move-border') {
       onChange();
