@@ -1,4 +1,4 @@
-import { dist, polygonArea, centroid, pointInPolygon, bbox, setEdgeLength, rectangle, ellipse, triangle, closestOnPolygon, distToPolygon, polygonsOverlap, insideOrOn } from './geometry.js';
+import { dist, polygonArea, centroid, pointInPolygon, bbox, setEdgeLength, closestOnPolygon, distToPolygon, polygonsOverlap, insideOrOn } from './geometry.js';
 import { loadData, saveData, uid } from './store.js';
 import { mountGardenMap, orthoTiles } from './garden-map.js';
 import * as cloud from './cloud-sync.js';
@@ -553,43 +553,11 @@ function newBorderDialog() {
   openDialog(`
     <h2>New border</h2>
     <label>Name</label><input type="text" id="nb-name" placeholder="e.g. Front border">
-    <label>Starting shape</label>
-    <select id="nb-shape">
-      <option value="rect">Rectangle</option><option value="circle">Circle</option>
-      <option value="oval">Oval</option><option value="triangle">Triangle</option>
-      <option value="free">Draw freehand</option>
-    </select>
-    <p class="muted" id="nb-info"></p>
-    <div class="row" id="nb-dims"><div class="grow"><label id="nb-wl"></label><input type="number" id="nb-w" step="0.01" min="0"></div>
-    <div class="grow" id="nb-hbox"><label id="nb-hl"></label><input type="number" id="nb-h" step="0.01" min="0"></div></div>
     <div class="dlg-btns"><button class="btn alt" id="nb-cancel">Cancel</button><button class="btn" id="nb-ok">Create</button></div>`,
   d => {
-    const labels = {
-      rect: ['Width (m)', 'Length (m)'], circle: ['Diameter (m)'], oval: ['Width (m)', 'Length (m)'],
-      triangle: ['Base (m)', 'Height (m)'], free: [],
-    };
-    const shape = d.querySelector('#nb-shape');
-    const sync = () => {
-      const l = labels[shape.value];
-      d.querySelector('#nb-dims').hidden = !l.length;
-      d.querySelector('#nb-hbox').hidden = l.length < 2;
-      d.querySelector('#nb-wl').textContent = l[0] ?? '';
-      d.querySelector('#nb-hl').textContent = l[1] ?? '';
-      d.querySelector('#nb-info').textContent = shape.value === 'free'
-        ? 'Tap the corners of the border on the map.'
-        : 'Enter the outer measurements. The outer points are locked; reshape the border with the points in between (or add new ones).';
-    };
-    shape.onchange = sync; sync();
     d.querySelector('#nb-cancel').onclick = closeDialog;
     d.querySelector('#nb-ok').onclick = () => {
-      const w = parseFloat(d.querySelector('#nb-w').value) * 100;
-      const h = shape.value === 'circle' ? w : parseFloat(d.querySelector('#nb-h').value) * 100;
-      const make = { rect: rectangle, circle: ellipse, oval: ellipse, triangle: triangle }[shape.value];
-      if (make && !(w > 0 && h > 0)) { notify('Please enter the dimensions.'); return; }
-      const border = {
-        id: uid(), name: d.querySelector('#nb-name').value.trim() || 'Border', photo: null,
-        points: make ? make(w, h) : [], zones: [],
-      };
+      const border = { id: uid(), name: d.querySelector('#nb-name').value.trim() || 'Border', photo: null, points: [], zones: [] };
       data.borders.push(border);
       save();
       closeDialog();
@@ -619,6 +587,7 @@ const ICONS = Object.fromEntries(Object.entries({
   rotL: '<path d="M4 12a8 8 0 108-8H8"/><path d="M11 1L8 4l3 3"/>',
   rotR: '<path d="M20 12a8 8 0 11-8-8h4"/><path d="M13 1l3 3-3 3"/>',
   layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
+  toolbox: '<rect x="3" y="8" width="18" height="12" rx="2"/><path d="M9 8V6a1 1 0 011-1h4a1 1 0 011 1v2M3 13h18M11 13v2h2v-2"/>',
 }).map(([k, v]) => [k, `<svg viewBox="0 0 24 24" aria-hidden="true">${v}</svg>`]));
 
 function rotatePoints(points, deg, pivot) {
@@ -651,6 +620,7 @@ function openEditor(borderId) {
     mode: border.points.length ? 'view' : 'drawBorder', // view | edit | drawBorder | drawZone
     draft: [],
     shape: null,
+    shapesOpen: false,
     sel: { kind: 'border' },
     selVertex: -1,
     vb: { x: 0, y: 0, w: 500 },
@@ -880,27 +850,31 @@ function openEditor(borderId) {
     tools.innerHTML = '';
     const hasBorder = border.points.length >= 3;
     const drawing = st.mode === 'drawBorder' || st.mode === 'drawZone';
-    const goMode = m => () => { st.mode = m; st.draft = []; st.shape = null; st.selVertex = -1; update(); };
+    const goMode = m => () => { st.mode = m; st.draft = []; st.shape = null; st.selVertex = -1; st.shapesOpen = false; update(); };
     const snapBtn = () => btn('magnet', st.snap ? 'Snap to border: on' : 'Snap to border: off', { on: st.snap, fn: toggleSnap });
 
     // each group: [label, buttons]
     const groups = [];
     if (st.mode === 'placeShape') {
+      const cancel = goMode(st.shape.target === 'border' ? 'drawBorder' : 'drawZone');
       groups.push(
-        ['Place shape', [btn('check', 'Place', { fn: confirmShape, kind: 'primary', text: true }), btn('x', 'Cancel', { fn: goMode('drawZone') })]],
+        ['Place shape', [btn('check', 'Place', { fn: confirmShape, kind: 'primary', text: true }), btn('x', 'Cancel', { fn: cancel })]],
+        ['Size', [btn('ruler', 'Set distances', { fn: sizeDialog })]],
         ['Rotate', [btn('rotL', 'Rotate 15° left', { fn: () => rotateBy(-15) }), btn('rotR', 'Rotate 15° right', { fn: () => rotateBy(15) })]],
-        ['Options', [snapBtn()]],
+        ...(st.shape.target === 'border' ? [] : [['Options', [snapBtn()]]]),
       );
     } else if (drawing) {
-      const first = st.mode === 'drawZone' && !st.draft.length;
+      const first = !st.draft.length;
       if (first) {
-        groups.push(['Quick shapes', [
+        const shapes = [btn('toolbox', 'Ready-made shapes', { on: st.shapesOpen, fn: () => { st.shapesOpen = !st.shapesOpen; renderTools(); } })];
+        if (st.shapesOpen) shapes.push(
           btn('rect', 'Rectangle', { fn: () => startShape('rect') }),
           btn('oval', 'Oval', { fn: () => startShape('oval') }),
           btn('triangle', 'Triangle', { fn: () => startShape('triangle') }),
-        ]]);
+        );
+        groups.push(['Toolbox', shapes]);
       }
-      groups.push([first ? 'Or draw freehand' : st.mode === 'drawZone' ? 'New zone' : 'Border outline', [
+      groups.push([st.mode === 'drawZone' ? 'New zone' : 'Border outline', [
         btn('check', 'Finish', { fn: finishDraft, disabled: st.draft.length < 3, kind: 'primary', text: true }),
         btn('undo', 'Undo last point', { fn: () => { st.draft.pop(); update(); }, disabled: !st.draft.length }),
         ...(st.mode === 'drawZone' ? [snapBtn(), btn('x', 'Cancel', { fn: goMode('view') })] : []),
@@ -961,25 +935,63 @@ function openEditor(borderId) {
     const hints = {
       view: border.zones.length ? 'Tap a zone to see or edit its plants. Drag to pan, pinch to zoom.' : 'Tap “Add zone” to mark where you planted something.',
       edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, the square handles to resize, the round handle on top to rotate, orange points to reshape, a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Green squares are locked points; drag orange points, or a white dot to add a point. Tap a point, then the lock button, to lock it. Tap a zone to edit it.',
-      drawBorder: 'Tap the corners of the border one by one, then Finish. (Tap the green first point to close.)',
-      drawZone: 'Pick a quick shape, or tap the corners of the planted area and press Finish. With snap on, zones stay inside the border and cannot overlap other zones.',
-      placeShape: 'Drag the shape to move it, the square handles to resize it and the round handle on top to rotate it (or use the rotate buttons). Press Place when it is where you want it.',
+      drawBorder: 'Tap the corners of the border one by one, then Finish (or tap the green first point to close). Or open the toolbox for a ready-made shape.',
+      drawZone: 'Tap the corners of the planted area and press Finish, or open the toolbox for a ready-made shape. With snap on, zones stay inside the border and cannot overlap other zones.',
+      placeShape: 'Drag the shape to move it, the square handles to resize it and the round handle on top to rotate it. Use the ruler to type exact distances. Press Place when it is where you want it.',
     };
     hint.textContent = hints[st.mode];
   }
 
   function startShape(kind) {
-    const b = bbox(border.points);
-    const w = Math.min(Math.max((b.maxX - b.minX) * 0.3, 40), b.maxX - b.minX);
-    const h = Math.min(Math.max((b.maxY - b.minY) * 0.3, 40), b.maxY - b.minY);
-    st.shape = { points: shapePoints(kind, centroid(border.points), w, h) };
+    const onBorder = border.points.length < 3;
+    let c, w, h;
+    if (onBorder) {
+      const vh = st.vb.w * rect().height / rect().width;
+      c = { x: st.vb.x + st.vb.w / 2, y: st.vb.y + vh / 2 };
+      w = Math.round(st.vb.w * 0.4 / 10) * 10; h = Math.round(Math.min(st.vb.w * 0.3, vh * 0.5) / 10) * 10;
+    } else {
+      const b = bbox(border.points);
+      c = centroid(border.points);
+      w = Math.min(Math.max((b.maxX - b.minX) * 0.3, 40), b.maxX - b.minX);
+      h = Math.min(Math.max((b.maxY - b.minY) * 0.3, 40), b.maxY - b.minY);
+    }
+    st.shape = { kind, target: onBorder ? 'border' : 'zone', points: shapePoints(kind, c, w, h) };
+    st.shapesOpen = false;
     st.mode = 'placeShape';
     update();
   }
 
   function confirmShape() {
+    if (st.shape.target === 'border') {
+      border.points = st.shape.points;
+      st.shape = null; st.mode = 'view';
+      save(); fit(); update();
+      return;
+    }
     if (!zoneFits(st.shape.points, null)) { notify('This shape overlaps another zone or leaves the border. Move or resize it, or turn Snap off.'); return; }
     addZone(st.shape.points, st.shape.rot);
+  }
+
+  function sizeDialog() {
+    const sh = st.shape, rot = sh.rot || 0;
+    const fr = shapeFrame(sh.points, rot);
+    const w0 = dist(fr.box[0], fr.box[1]), h0 = dist(fr.box[1], fr.box[2]);
+    const [wl, hl] = sh.kind === 'triangle' ? ['Base', 'Height'] : ['Width', 'Length'];
+    openDialog(`<h2>Distances</h2>
+      <div class="row"><div class="grow"><label>${wl} (m)</label><input type="number" id="sz-w" step="0.01" min="0.1" value="${m2(w0)}"></div>
+      <div class="grow"><label>${hl} (m)</label><input type="number" id="sz-h" step="0.01" min="0.1" value="${m2(h0)}"></div></div>
+      <div class="dlg-btns"><button class="btn alt" id="sz-cancel">Cancel</button><button class="btn" id="sz-ok">Apply</button></div>`,
+    d => {
+      d.querySelector('#sz-cancel').onclick = closeDialog;
+      d.querySelector('#sz-ok').onclick = () => {
+        const w = parseFloat(d.querySelector('#sz-w').value) * 100, h = parseFloat(d.querySelector('#sz-h').value) * 100;
+        if (!(w >= 10 && h >= 10)) { notify('Please enter the distances.'); return; }
+        const mid = { x: (fr.box[0].x + fr.box[2].x) / 2, y: (fr.box[0].y + fr.box[2].y) / 2 };
+        const scaled = rotatePoints(sh.points, -rot, mid).map(p => ({ x: mid.x + (p.x - mid.x) * w / w0, y: mid.y + (p.y - mid.y) * h / h0 }));
+        sh.points = rotatePoints(scaled, rot, mid);
+        closeDialog(); update();
+      };
+    });
   }
 
   function rotateBy(deg) {
