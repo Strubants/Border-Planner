@@ -17,9 +17,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 
 function gardenPlanning(garden) {
   garden.planning ??= {};
-  garden.planning.showGrid ??= false;
   garden.planning.showLabels ??= true;
-  garden.planning.snapToGrid ??= false;
   if (!['satellite', 'lines'].includes(garden.planning.viewMode)) garden.planning.viewMode = 'satellite';
   garden.planning.placements ??= [];
   garden.planning.imageBoundary ??= null;
@@ -171,18 +169,16 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       <section class="garden-map-stage" aria-label="Garden map workspace">
         <div class="garden-map-controls">
           <button class="gm-btn garden-mobile-exit" type="button" id="garden-exit" aria-label="Back to app" title="Back to app">${GI.back}</button>
-          <button class="gm-btn" type="button" id="garden-fit" aria-label="Show whole garden" title="Show whole garden">${GI.fullscreen}</button>
-          <span class="garden-zoom-controls"><button type="button" id="garden-zoom-out" aria-label="Zoom out">−</button><button type="button" id="garden-zoom-in" aria-label="Zoom in">+</button></span>
-        </div>
+          <button class="gm-btn" type="button" id="garden-fit" aria-label="Show whole garden" title="Show whole garden">          ${GI.fullscreen}</button>
+                  </div>
         <div class="garden-rail">
           <button class="gm-btn" type="button" id="garden-toggle-tools" aria-expanded="false" aria-label="Tools" title="Tools">${GI.hammer}</button>
           <div class="garden-rail-tools">
             <button class="gm-btn" type="button" data-tool-open="image" aria-label="Satellite view" title="Satellite view">${GI.photo}</button>
             <button class="gm-btn" type="button" data-tool-open="garden" aria-label="Garden perimeter" title="Garden perimeter">${GI.perimeter}</button>
-            <button class="gm-btn" type="button" data-tool-open="place" aria-label="Place borders" title="Place borders">${GI.pin}</button>
-            <button class="gm-btn" type="button" data-tool-open="grid" aria-label="Grid" title="Grid">${GI.grid}</button>
-          </div>
-        </div>
+            <button class="gm-btn" type="button" data-tool-open="place" aria-label="Place borders" title="Place borders">            ${GI.pin}</button>
+                      </div>
+                    </div>
         <div class="garden-map-wrap"></div>
         <div class="garden-map-legend">
           <span class="legend-official-parcel"><i class="garden-parcel-key"></i>Official parcel</span>
@@ -241,12 +237,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
           </div>
           <div id="garden-placements"></div>
         </section>
-        <section class="garden-tool-section" data-tool-panel="grid" hidden>
-          <h3 id="garden-grid-label">Grid</h3>
-          <div class="garden-tool-actions">
-            <label class="garden-map-toggle" id="garden-grid-control"><input type="checkbox" id="garden-grid"> Show grid</label>
-          </div>
-        </section>
           </aside>
         </div>
       </section>
@@ -260,7 +250,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     status.textContent = 'Imagery could not be loaded.';
   }, true);
   const placementsList = container.querySelector('#garden-placements');
-  const gridInput = container.querySelector('#garden-grid');
   const borderSelect = container.querySelector('#garden-border-select');
   const imageAreaStatus = container.querySelector('#garden-image-area-status');
   const perimeterStatus = container.querySelector('#garden-perimeter-status');
@@ -386,11 +375,8 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     const satelliteView = planning.viewMode !== 'lines';
     svg.classList.toggle('line-view', !satelliteView);
     mapWrap.classList.toggle('line-view', !satelliteView);
-    container.querySelector('#garden-grid-control').hidden = !satelliteView;
-    container.querySelector('[data-tool-open="grid"]').hidden = !satelliteView;
     tileLayer.style.display = satelliteView ? '' : 'none';
     buildingLayer.innerHTML = satelliteView ? '' : state.featureMarkup;
-    container.querySelector('#garden-grid-label').textContent = `Grid · ${gridStep()} m`;
     if (satelliteView) {
       const tiles = tileImages();
       if (tiles.key !== state.tileKey) {
@@ -413,7 +399,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     parcelMask.innerHTML = `<rect x="${view.x}" y="${view.y}" width="${view.w}" height="${view.h}" fill="black"/>
       <path d="${imageryBoundary}" fill="white" fill-rule="evenodd"/>
       <path d="${imageryBoundary}" fill="none" stroke="white" stroke-width="10" stroke-linejoin="round"/>`;
-    const gridPath = satelliteView && planning.showGrid ? gridMarkup(stroke) : '';
     const showOfficialParcel = false;
     parcelLayer.innerHTML = showOfficialParcel
       ? `<path d="${parcelPolygons}" class="garden-parcel-casing" fill-rule="evenodd" vector-effect="non-scaling-stroke"/>
@@ -452,24 +437,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     }
 
     borderLayer.innerHTML = markup;
-  }
-
-  function gridStep() {
-    const desired = view.w / 12;
-    const power = 10 ** Math.floor(Math.log10(desired));
-    return [1, 2, 5, 10].map(multiplier => multiplier * power)
-      .find(value => value >= desired) || power * 10;
-  }
-
-  function gridMarkup(stroke) {
-    const step = gridStep();
-    const north = -view.y, south = -(view.y + view.h);
-    const firstX = Math.floor(view.x / step) * step;
-    const firstY = Math.floor(south / step) * step;
-    const lines = [];
-    for (let x = firstX; x <= view.x + view.w; x += step) lines.push(`M${x},${-north}V${-south}`);
-    for (let y = firstY; y <= north; y += step) lines.push(`M${view.x},${-y}H${view.x + view.w}`);
-    return `<path d="${lines.join('')}" class="garden-grid" stroke-width="${stroke * 0.7}" vector-effect="non-scaling-stroke"/>`;
   }
 
   function outlineMarkup(kind, stroke) {
@@ -1000,11 +967,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   viewToggle.classList.toggle('on', planning.viewMode !== 'lines');
   viewToggle.setAttribute('aria-pressed', String(planning.viewMode !== 'lines'));
 
-  gridInput.checked = planning.showGrid;
-  gridInput.onchange = () => {
-    planning.showGrid = gridInput.checked;
-    draw(); onChange();
-  };
   container.querySelector('#garden-fit').onclick = fitGarden;
   container.querySelector('#garden-exit').onclick = () => {
     document.querySelector('#nav [data-nav="list"]')?.click();
@@ -1013,8 +975,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   container.querySelectorAll('[data-tool-open]').forEach(button => {
     button.onclick = () => showTool(workspace, workspace.dataset.tool === button.dataset.toolOpen ? null : button.dataset.toolOpen);
   });
-  container.querySelector('#garden-zoom-in').onclick = () => zoomAt(1 / 1.4);
-  container.querySelector('#garden-zoom-out').onclick = () => zoomAt(1.4);
   container.querySelector('#garden-place-border').onclick = beginPlacement;
   container.querySelector('#garden-draw-image-area').onclick = () => startDrawing('image');
   container.querySelector('#garden-draw-perimeter').onclick = () => startDrawing('garden');
@@ -1058,17 +1018,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     draw();
     onChange();
   };
-
-  function zoomAt(factor) {
-    const centerX = view.x + view.w / 2;
-    const centerY = view.y + view.h / 2;
-    const rect = svg.getBoundingClientRect();
-    view.w = Math.min(20000, Math.max(8, view.w * factor));
-    view.h = view.w * rect.height / rect.width;
-    view.x = centerX - view.w / 2;
-    view.y = centerY - view.h / 2;
-    draw();
-  }
 
   function resizeMap() {
     const rect = svg.getBoundingClientRect();
