@@ -18,6 +18,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
 function gardenPlanning(garden) {
   garden.planning ??= {};
   garden.planning.showGrid ??= false;
+  garden.planning.showLabels ??= true;
   garden.planning.snapToGrid ??= false;
   if (!['satellite', 'lines'].includes(garden.planning.viewMode)) garden.planning.viewMode = 'satellite';
   garden.planning.placements ??= [];
@@ -34,6 +35,7 @@ const GI = Object.fromEntries(Object.entries({
   photo: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-5 4 4 3-3 4 4"/>',
   perimeter: '<path d="M12 3l8 6-3 11H7L4 9z" stroke-dasharray="3 3"/>',
   pin: '<path d="M12 21s7-6 7-11a7 7 0 10-14 0c0 5 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/>',
+  tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1"/>',
   grid: '<path d="M4 4h16v16H4zM4 12h16M12 4v16"/>',
   layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
@@ -195,7 +197,10 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
               <div class="garden-map-status" id="garden-map-status" role="status" aria-live="polite"></div>
               <a class="garden-attribution" href="https://metadata.vlaanderen.be/srv/api/records/50134be3-f0cd-47c5-8f6e-4a0936287947" target="_blank" rel="noreferrer">© Digitaal Vlaanderen</a>
             </div>
-            <button class="garden-view-toggle" type="button" id="garden-view-toggle" aria-pressed="true">${GI.layers}<span>Satellite</span></button>
+            <div class="garden-toggle-stack">
+              <button class="garden-view-toggle" type="button" id="garden-label-toggle" aria-pressed="true">${GI.tag}<span>Labels</span></button>
+              <button class="garden-view-toggle" type="button" id="garden-view-toggle" aria-pressed="true">${GI.layers}<span>Satellite</span></button>
+            </div>
           </div>
           <aside class="garden-sheet" aria-label="Garden tools">
         <section class="garden-tool-section" data-tool-panel="image" hidden>
@@ -440,10 +445,10 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       markup += `<g data-placement="${esc(placement.id)}" transform="translate(${placement.x},${-placement.y}) rotate(${placement.rotation || 0}) scale(0.01) translate(${-centerX},${-centerY})" class="garden-placed-border${selected ? ' selected' : ''}">
         ${zones}<path d="${outline}" fill="${selected ? '#e5a944' : '#f2d57c'}" fill-opacity=".35" stroke="${selected ? '#b54b19' : '#8a6122'}" stroke-width="3" vector-effect="non-scaling-stroke"/>
       </g>
-      <g class="garden-border-label" pointer-events="none">
+      ${planning.showLabels === false ? '' : `<g class="garden-border-label" pointer-events="none">
         <rect x="${placement.x - labelWidth / 2}" y="${labelY}" width="${labelWidth}" height="${labelHeight}" rx="${labelHeight / 2}" vector-effect="non-scaling-stroke"/>
         <text x="${placement.x}" y="${labelY + labelHeight * 0.68}" font-size="${labelFontSize}">${esc(border.name)}</text>
-      </g>`;
+      </g>`}`;
     }
 
     borderLayer.innerHTML = markup;
@@ -974,6 +979,17 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     draw();
   }, { passive: false });
 
+  const labelToggle = container.querySelector('#garden-label-toggle');
+  const syncLabelToggle = () => {
+    labelToggle.classList.toggle('on', planning.showLabels !== false);
+    labelToggle.setAttribute('aria-pressed', String(planning.showLabels !== false));
+  };
+  syncLabelToggle();
+  labelToggle.onclick = () => {
+    planning.showLabels = planning.showLabels === false;
+    syncLabelToggle();
+    draw(); onChange();
+  };
   viewToggle.onclick = () => setViewMode(planning.viewMode === 'lines' ? 'satellite' : 'lines');
   viewToggle.classList.toggle('on', planning.viewMode !== 'lines');
   viewToggle.setAttribute('aria-pressed', String(planning.viewMode !== 'lines'));

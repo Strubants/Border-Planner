@@ -90,6 +90,7 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
 .garden-bottom-left .garden-map-status { position: static; }
 .garden-attribution { font-size: .66rem; color: #fff; text-shadow: 0 0 3px #000; text-decoration: none; }
 .garden-map-wrap.line-view ~ .garden-bottom .garden-attribution { color: #5b6b5b; text-shadow: none; }
+.garden-toggle-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .garden-view-toggle { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,.96); color: inherit; font-size: .82rem; box-shadow: 0 1px 6px rgba(0,0,0,.2); }
 .garden-view-toggle svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .garden-view-toggle.on { background: #2f6b3a; color: #fff; border-color: #2f6b3a; }
