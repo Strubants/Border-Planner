@@ -17,8 +17,9 @@ const json = (body: unknown, status = 200) =>
 const SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['found', 'color', 'bloomFrom', 'bloomTo', 'water', 'sun', 'notes'],
+  required: ['found', 'color', 'bloomFrom', 'bloomTo', 'water',   'sun', 'height', 'notes'],
   properties: {
+      height: { type: 'integer' },
     found: { type: 'boolean' },
     color: { type: 'string' },
     bloomFrom: { type: 'integer' },
@@ -36,7 +37,8 @@ Given a plant name (common name in any language, or Latin name), return its typi
 - bloomFrom / bloomTo: first and last flowering month as numbers 1-12 for Belgian conditions; 0 and 0 if it does not flower noticeably. A range may wrap around the year end.
 - water: "low" (drought tolerant), "medium" or "high" (likes moist soil).
 - sun: "sun" (full sun), "partial" (partial shade) or "shade" (full shade).
-- notes: one or two short English sentences with the most useful care tips (height, pruning, soil). Plain text, max 200 characters.`;
+- height: typical mature height of the plant including flower stems, as whole centimetres (for example 60); 0 if unknown.
+- notes: one or two short English sentences with the most useful care tips (pruning, soil). Plain text, max 200 characters.`;
 
 const clean = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
 
@@ -62,7 +64,7 @@ Deno.serve(async req => {
   const key = name.toLowerCase().replace(/\s+/g, ' ');
 
   const { data: cached } = await admin.from('plant_autofill_cache').select('result').eq('name_key', key).maybeSingle();
-  if (cached?.result) return json({ ...cached.result, cached: true });
+  if (cached?.result && 'height' in cached.result) return json({ ...cached.result, cached: true });
 
   const day = new Date().toISOString().slice(0, 10);
   const { data: usage } = await admin.from('plant_autofill_usage').select('count').eq('user_id', userId).eq('day', day).maybeSingle();
@@ -106,6 +108,7 @@ Deno.serve(async req => {
     bloomTo,
     water: ['low', 'medium', 'high'].includes(parsed.water) ? parsed.water : '',
     sun: ['sun', 'partial', 'shade'].includes(parsed.sun) ? parsed.sun : '',
+    height: Number.isInteger(parsed.height) && parsed.height > 0 && parsed.height <= 3000 ? parsed.height : 0,
     notes: clean(parsed.notes, 300),
   };
 

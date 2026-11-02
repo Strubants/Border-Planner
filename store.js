@@ -1,6 +1,6 @@
 // Persistence in IndexedDB (handles photos, unlike localStorage).
 // Data model (JSON, kept platform-neutral so a native app can reuse it):
-// { version, plants:[{ id, name, color:'#rrggbb', bloomFrom:1-12|0, bloomTo:1-12|0, water, sun, notes }],
+// { version, plants:[{ id, name, color:'#rrggbb', bloomFrom:1-12|0, bloomTo:1-12|0, water, sun, height (cm, 0 = unknown), notes }],
 //   borders: [{ id, name, photo, points:[{x,y}], zones:[{ id, name, points, plants:[
 //   { id, plantId (-> plants[].id), planted:'YYYY-MM-DD', note }] }] }],
 //   gardens:[{ id, address, location, parcel, planning: { viewMode, showGrid, snapToGrid,

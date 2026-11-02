@@ -1383,6 +1383,7 @@ function plantSummary(p) {
     p.bloomFrom && p.bloomTo ? `blooms ${MONTHS[p.bloomFrom - 1]}–${MONTHS[p.bloomTo - 1]}` : '',
     p.water && 'water: ' + label(WATER, p.water),
     p.sun && label(SUN, p.sun),
+    p.height && (p.height >= 100 ? `${(p.height / 100).toFixed(p.height % 100 ? 1 : 0)} m tall` : `${p.height} cm tall`),
   ].filter(Boolean).join(' · ') || 'No details yet';
 }
 
@@ -1400,6 +1401,7 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
     <div><label>Colour</label><input type="color" id="pl-color" value="${esc(p.color)}"></div></div>
     <div class="row"><div class="grow"><label>Water</label><select id="pl-water">${opts(WATER, p.water)}</select></div>
     <div class="grow"><label>Sun / shade</label><select id="pl-sun">${opts(SUN, p.sun)}</select></div></div>
+    <label>Height (cm)</label><input type="number" id="pl-height" min="0" max="3000" step="1" inputmode="numeric" value="${p.height || ''}" placeholder="e.g. 60">
     <label>Notes</label><textarea id="pl-notes" rows="2">${esc(p.notes)}</textarea>
     <div class="dlg-btns">${plant && canDelete ? '<button class="btn danger" id="pl-del">Delete</button>' : ''}<button class="btn alt" id="pl-cancel">Cancel</button><button class="btn" id="pl-save">Save</button></div>`,
   d => {
@@ -1427,6 +1429,7 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
         set('#pl-color', r.color);
         set('#pl-water', r.water);
         set('#pl-sun', r.sun);
+        set('#pl-height', r.height);
         if (r.notes && !d.querySelector('#pl-notes').value.trim()) set('#pl-notes', r.notes);
         showMsg('Filled in by AI. Please check the highlighted fields before saving.');
       } catch (error) {
@@ -1452,6 +1455,7 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
         bloomTo: +d.querySelector('#pl-to').value,
         water: d.querySelector('#pl-water').value,
         sun: d.querySelector('#pl-sun').value,
+        height: Math.max(0, Math.round(+d.querySelector('#pl-height').value || 0)),
         notes: d.querySelector('#pl-notes').value.trim(),
       });
       if (!plant) data.plants.push(p);
