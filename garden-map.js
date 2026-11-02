@@ -42,6 +42,7 @@ const GI = Object.fromEntries(Object.entries({
   check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/>',
   pointMinus: '<circle cx="9" cy="12" r="4"/><path d="M16 12h6"/>',
+  pointPlus: '<circle cx="9" cy="12" r="4"/><path d="M16 12h6M19 9v6"/>',
 }).map(([k, v]) => [k, `<svg viewBox="0 0 24 24" aria-hidden="true">${v}</svg>`]));
 
 function setToolsOpen(workspace, toolsToggle, open) {
@@ -205,6 +206,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
             <button class="gm-btn danger" type="button" id="garden-reset-image-area" hidden aria-label="Remove area" title="Remove area">${GI.x}</button>
             <button class="gm-btn primary" type="button" id="garden-finish-image-area" hidden aria-label="Save" title="Save">${GI.check}</button>
             <button class="gm-btn" type="button" id="garden-undo-image-area" hidden aria-label="Undo point" title="Undo point">${GI.undo}</button>
+            <button class="gm-btn" type="button" id="garden-add-image-point" hidden aria-pressed="false" aria-label="Add point" title="Add point">${GI.pointPlus}</button>
             <button class="gm-btn" type="button" id="garden-remove-image-point" hidden disabled aria-label="Remove selected point" title="Remove selected point">${GI.pointMinus}</button>
             <button class="gm-btn primary" type="button" id="garden-done-edit-image-area" hidden aria-label="Done" title="Done">${GI.check}</button>
             <button class="gm-btn" type="button" id="garden-cancel-image-area" hidden aria-label="Cancel" title="Cancel">${GI.x}</button>
@@ -219,6 +221,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
             <button class="gm-btn danger" type="button" id="garden-clear-perimeter" hidden aria-label="Remove perimeter" title="Remove perimeter">${GI.x}</button>
             <button class="gm-btn primary" type="button" id="garden-finish-perimeter" hidden aria-label="Save" title="Save">${GI.check}</button>
             <button class="gm-btn" type="button" id="garden-undo-perimeter" hidden aria-label="Undo point" title="Undo point">${GI.undo}</button>
+            <button class="gm-btn" type="button" id="garden-add-perimeter-point" hidden aria-pressed="false" aria-label="Add point" title="Add point">${GI.pointPlus}</button>
             <button class="gm-btn" type="button" id="garden-remove-perimeter-point" hidden disabled aria-label="Remove selected point" title="Remove selected point">${GI.pointMinus}</button>
             <button class="gm-btn primary" type="button" id="garden-done-edit-perimeter" hidden aria-label="Done" title="Done">${GI.check}</button>
             <button class="gm-btn" type="button" id="garden-cancel-perimeter" hidden aria-label="Cancel" title="Cancel">${GI.x}</button>
@@ -236,8 +239,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         <section class="garden-tool-section" data-tool-panel="grid" hidden>
           <h3 id="garden-grid-label">Grid</h3>
           <div class="garden-tool-actions">
-            <label class="garden-map-toggle" id="garden-grid-control"><input type="checkbox" id="garden-grid"> Show grid</label>
-            <label class="garden-map-toggle" id="garden-snap-control"><input type="checkbox" id="garden-snap-grid"> Snap</label>
+            <label class="garden-map-toggle" id="garden-grid-control"><input type="checkbox" id="garden-grid"> Show grid</label>
           </div>
         </section>
           </aside>
@@ -254,7 +256,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   }, true);
   const placementsList = container.querySelector('#garden-placements');
   const gridInput = container.querySelector('#garden-grid');
-  const snapGridInput = container.querySelector('#garden-snap-grid');
   const borderSelect = container.querySelector('#garden-border-select');
   const imageAreaStatus = container.querySelector('#garden-image-area-status');
   const perimeterStatus = container.querySelector('#garden-perimeter-status');
@@ -381,7 +382,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     svg.classList.toggle('line-view', !satelliteView);
     mapWrap.classList.toggle('line-view', !satelliteView);
     container.querySelector('#garden-grid-control').hidden = !satelliteView;
-    container.querySelector('#garden-snap-control').hidden = !satelliteView;
     container.querySelector('[data-tool-open="grid"]').hidden = !satelliteView;
     tileLayer.style.display = satelliteView ? '' : 'none';
     buildingLayer.innerHTML = satelliteView ? '' : state.featureMarkup;
@@ -496,9 +496,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
 
   function mapPoint(event, allowSnap = true) {
     const point = pointAt(event);
-    if (!allowSnap || planning.viewMode === 'lines' || !planning.snapToGrid) return point;
-    const step = gridStep();
-    return { x: Math.round(point.x / step) * step, y: Math.round(point.y / step) * step };
+    return point;
   }
 
   function renderPlacementControls() {
@@ -640,9 +638,12 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       container.querySelector(`#${kind === 'image' ? 'garden-edit-image-area' : 'garden-edit-perimeter'}`).hidden = drawing || editing || !hasShape;
       container.querySelector(`#garden-finish-${suffix}`).hidden = !drawing;
       container.querySelector(`#garden-undo-${suffix}`).hidden = !drawing;
+      const addPoint = container.querySelector(`#garden-add-${kind === 'image' ? 'image' : 'perimeter'}-point`);
+      addPoint.hidden = !editing;
+      addPoint.classList.toggle('on', editing && state.addPoint);
+      addPoint.setAttribute('aria-pressed', String(editing && state.addPoint));
       container.querySelector(`#garden-remove-${kind === 'image' ? 'image' : 'perimeter'}-point`).hidden = !editing;
-      container.querySelector(`#garden-remove-${kind === 'image' ? 'image' : 'perimeter'}-point`).disabled =
-        !editing || state.selectedVertex < 0 || !points || points.length <= 3;
+      container.querySelector(`#garden-remove-${kind === 'image' ? 'image' : 'perimeter'}-point`).disabled = !editing || state.selectedVertex < 0 || !points || points.length <= 3;
       container.querySelector(`#garden-done-edit-${kind === 'image' ? 'image-area' : 'perimeter'}`).hidden = !editing;
       container.querySelector(`#garden-cancel-${suffix}`).hidden = !drawing && !editing;
       const reset = container.querySelector(`#garden-${kind === 'image' ? 'reset-image-area' : 'clear-perimeter'}`);
@@ -651,7 +652,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       container.querySelector(`#garden-undo-${suffix}`).disabled = !points?.length;
       const hint = kind === 'image' ? imageAreaStatus : perimeterStatus;
       hint.textContent = drawing ? `${points.length} ${points.length === 1 ? 'point' : 'points'}`
-        : editing ? 'Drag a point. Tap an edge to add one.'
+        : editing ? (state.addPoint ? 'Tap the map to add a point.' : 'Drag a point to move it.')
           : hasShape ? '' : kind === 'image' ? 'Optional: limit the satellite image to an area.' : 'Trace your fences or hedges.';
     }
   }
@@ -679,6 +680,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     }
     state.mode = 'edit-outline';
     state.editingKind = kind;
+    state.addPoint = false;
     state.editSnapshot = points.map(point => ({ ...point }));
     state.selectedVertex = -1;
     setViewMode('satellite');
@@ -718,11 +720,12 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     }
     state.shapeDraft = null;
     state.editingKind = null;
+    state.addPoint = false;
     state.editSnapshot = null;
     state.selectedVertex = -1;
     state.mode = 'pan';
     svg.classList.remove('placing');
-    status.textContent = 'Outline editing canceled. Saved outlines are unchanged.';
+    status.textContent = '';
     updateOutlineControls();
     draw();
   }
@@ -730,12 +733,14 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   function finishEditing() {
     if (!state.editingKind) return;
     state.editingKind = null;
+    state.addPoint = false;
     state.editSnapshot = null;
     state.selectedVertex = -1;
     state.mode = 'pan';
     updateOutlineControls();
     draw();
-    status.textContent = 'Outline edits saved.';
+    status.textContent = '';
+    showTool(workspace, null);
   }
 
   function finishOutline(kind) {
@@ -748,11 +753,12 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
     state.mode = 'pan';
     svg.classList.remove('placing');
     updateOutlineControls();
-    status.textContent = `${kind === 'image' ? 'Satellite image area' : 'Garden perimeter'} saved.`;
+    status.textContent = '';
     if (kind === 'image') {
       fitGarden();
       if (planning.viewMode === 'lines') loadBuildingFootprints();
     } else draw();
+    showTool(workspace, null);
     onChange();
   }
 
@@ -940,7 +946,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         }
       }
     } else if (gesture.type === 'add-outline-point') {
-      if (event.type === 'pointerup' && Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8) {
+      if (state.addPoint && event.type === 'pointerup' && Math.hypot(event.clientX - gesture.clientX, event.clientY - gesture.clientY) < 8) {
         insertOutlinePoint(gesture.kind, mapPoint(event, false));
       }
     } else if (gesture.type === 'move-outline-point') {
@@ -975,19 +981,6 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   gridInput.checked = planning.showGrid;
   gridInput.onchange = () => {
     planning.showGrid = gridInput.checked;
-    if (!planning.showGrid) {
-      planning.snapToGrid = false;
-      snapGridInput.checked = false;
-    }
-    draw(); onChange();
-  };
-  snapGridInput.checked = planning.snapToGrid ?? false;
-  snapGridInput.onchange = () => {
-    planning.snapToGrid = snapGridInput.checked;
-    if (planning.snapToGrid) {
-      planning.showGrid = true;
-      gridInput.checked = true;
-    }
     draw(); onChange();
   };
   container.querySelector('#garden-fit').onclick = fitGarden;
@@ -1019,6 +1012,13 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   };
   container.querySelector('#garden-remove-image-point').onclick = () => removeSelectedOutlinePoint('image');
   container.querySelector('#garden-remove-perimeter-point').onclick = () => removeSelectedOutlinePoint('garden');
+  for (const [kind, id] of [['image', 'image'], ['garden', 'perimeter']]) {
+    container.querySelector(`#garden-add-${id}-point`).onclick = () => {
+      if (state.editingKind !== kind) return;
+      state.addPoint = !state.addPoint;
+      updateOutlineControls();
+    };
+  }
   container.querySelector('#garden-done-edit-image-area').onclick = finishEditing;
   container.querySelector('#garden-done-edit-perimeter').onclick = finishEditing;
   container.querySelector('#garden-cancel-image-area').onclick = cancelOutline;
