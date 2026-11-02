@@ -78,7 +78,7 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
 .garden-map-toggle input { width: auto; }
 .garden-zoom-controls { display: inline-flex; gap: 6px; margin-left: auto; }
 .garden-zoom-controls button { width: 42px; height: 42px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.96); font-size: 1.3rem; box-shadow: 0 1px 6px rgba(0,0,0,.2); }
-.garden-rail { position: absolute; z-index: 2; top: 64px; right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.garden-rail { position: absolute; z-index: 2; top: 10px; right: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
 .garden-rail-tools { display: none; flex-direction: column; gap: 8px; }
 .garden-workspace.garden-tools-open .garden-rail-tools { display: flex; }
 .garden-rail-tools .gm-btn[hidden] { display: none; }
@@ -173,7 +173,7 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
   .garden-address-side > * { flex: 1; }
   .garden-address-side #garden-status { align-self: center; }
   .garden-map-controls { top: 6px; left: 6px; right: 6px; }
-  .garden-rail { top: 56px; right: 6px; }
+  .garden-rail { top: 6px; right: 6px; }
   .garden-bottom { left: 6px; right: 6px; bottom: 6px; }
 }
 @media (max-width: 520px), (pointer: coarse) {
@@ -229,7 +229,7 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
   .garden-map-stage { position: absolute; inset: 0; min-height: 0; }
   .garden-map-wrap { position: absolute; inset: 0; min-height: 0; border: 0; border-radius: 0; }
   .garden-map-controls { top: calc(env(safe-area-inset-top) + 60px); left: 8px; right: 8px; }
-  .garden-rail { top: calc(env(safe-area-inset-top) + 110px); right: 8px; }
+  .garden-rail { top: calc(env(safe-area-inset-top) + 60px); right: 8px; }
   .garden-bottom { left: 8px; right: 8px; bottom: calc(env(safe-area-inset-bottom) + 8px); }
   .garden-mobile-exit { display: inline-grid; }
   .garden-map-status { font-size: .7rem; }
