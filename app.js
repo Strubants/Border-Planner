@@ -895,7 +895,7 @@ function openEditor(borderId) {
         btn('rotL', 'Rotate 15° left', { fn: () => rotateBy(-15) }), btn('rotR', 'Rotate 15° right', { fn: () => rotateBy(15) })] : [])]]);
       if (isZone) {
         groups.push(['Zone', [
-          btn('copy', 'Copy zone', { fn: () => { zoneClipboard = JSON.parse(JSON.stringify(selZone())); notify('Zone copied. Tap Add zone, then the paste button in the toolbox.'); renderTools(); } }),
+          btn('copy', 'Copy zone', { fn: () => { zoneClipboard = JSON.parse(JSON.stringify(selZone())); notify('Zone copied. Tap Add plants, then the paste button in the toolbox.'); renderTools(); } }),
           btn('details', 'Zone details and plants', { fn: () => zoneDialog(border, selZone(), update, false) }),
           btn('trash', 'Delete zone', {
             kind: 'danger',
@@ -933,11 +933,11 @@ function openEditor(borderId) {
     modes.append(
       btn('eye', 'View', { on: modeOn('view'), fn: goMode('view'), disabled: !hasBorder, text: true }),
       btn('pencil', 'Edit', { on: modeOn('edit'), fn: goMode('edit'), disabled: !hasBorder, text: true }),
-      btn('plus', 'Add zone', { on: modeOn('drawZone'), fn: goMode('drawZone'), disabled: !hasBorder, text: true }),
+      btn('plus', 'Add plants', { on: modeOn('drawZone'), fn: goMode('drawZone'), disabled: !hasBorder, text: true }),
     );
     tools.append(modes);
     const hints = {
-      view: border.zones.length ? 'Tap a zone to see or edit its plants. Drag to pan, pinch to zoom.' : 'Tap “Add zone” to mark where you planted something.',
+      view: border.zones.length ? 'Tap a zone to see or edit its plants. Drag to pan, pinch to zoom.' : 'Tap “Add plants” to mark where you planted something.',
       edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, the square handles to resize, the round handle on top to rotate, orange points to reshape, a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Green squares are locked points; drag orange points, or a white dot to add a point. Tap a point, then the lock button, to lock it. Tap a zone to edit it.',
       drawBorder: 'Tap the corners of the border one by one, then Finish (or tap the green first point to close). Or open the toolbox for a ready-made shape.',
       drawZone: 'Tap the corners of the planted area and press Finish, or open the toolbox for a ready-made shape.',
