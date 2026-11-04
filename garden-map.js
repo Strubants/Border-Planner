@@ -34,6 +34,7 @@ const GI = Object.fromEntries(Object.entries({
   satellite: '<rect x="9" y="9" width="6" height="6" rx="1" transform="rotate(45 12 12)"/><path d="M4.5 9.5l3-3M16.5 17.5l3-3M5 5l4 4M15 15l4 4"/><path d="M17 3.5a4.5 4.5 0 013.5 3.5M16.5 6.5A1.8 1.8 0 0117.5 7.5"/>',
   photo: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 18l5-5 4 4 3-3 4 4"/>',
   perimeter: '<path d="M12 3l8 6-3 11H7L4 9z" stroke-dasharray="3 3"/>',
+  home: '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>',
   pin: '<path d="M12 21s7-6 7-11a7 7 0 10-14 0c0 5 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/>',
   tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1"/>',
   grid: '<path d="M4 4h16v16H4zM4 12h16M12 4v16"/>',
@@ -143,7 +144,7 @@ export function orthoTiles(view, desiredResolution) {
   };
 }
 
-export function mountGardenMap(container, garden, { borders, plants, onChange }) {
+export function mountGardenMap(container, garden, { borders, plants, onChange, gardens = [], activeGardenId, onSelectGarden, onRemoveGarden }) {
   const typeFilter = loadTypeFilter();
   const planning = gardenPlanning(garden);
   const bounds = parcelBounds(garden);
@@ -177,6 +178,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
         <div class="garden-rail">
           <button class="gm-btn" type="button" id="garden-toggle-tools" aria-expanded="false" aria-label="Tools" title="Tools">${GI.hammer}</button>
           <div class="garden-rail-tools">
+            <button class="gm-btn" type="button" data-tool-open="gardens" aria-label="Saved gardens" title="Saved gardens">${GI.home}</button>
             <button class="gm-btn" type="button" data-tool-open="image" aria-label="Satellite view" title="Satellite view">${GI.satellite}</button>
             <button class="gm-btn" type="button" data-tool-open="garden" aria-label="Garden perimeter" title="Garden perimeter">${GI.perimeter}</button>
             <button class="gm-btn" type="button" data-tool-open="place" aria-label="Place borders" title="Place borders">            ${GI.pin}</button>
@@ -203,6 +205,13 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
             </div>
           </div>
           <aside class="garden-sheet" aria-label="Garden tools">
+        <section class="garden-tool-section" data-tool-panel="gardens" hidden>
+          <h3>Saved gardens</h3>
+          <div class="garden-tool-actions garden-place-row">
+            <select id="garden-saved-select" aria-label="Select a saved garden"></select>
+            <button class="gm-btn danger" type="button" id="garden-remove-saved" aria-label="Remove garden" title="Remove garden">${GI.x}</button>
+          </div>
+        </section>
         <section class="garden-tool-section" data-tool-panel="image" hidden>
           <h3>Satellite view</h3>
           <div class="garden-tool-actions">
@@ -1001,7 +1010,17 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       if (state.editingKind === 'image') finishEditing(); else showTool(workspace, null);
     };
   });
-  container.querySelector('#garden-place-border').onclick = beginPlacement;
+  const savedSelect = container.querySelector('#garden-saved-select');
+  for (const item of gardens) {
+    const option = document.createElement('option');
+    option.value = item.id;
+    option.textContent = item.address;
+    option.selected = item.id === activeGardenId;
+    savedSelect.append(option);
+  }
+  savedSelect.onchange = () => onSelectGarden?.(savedSelect.value);
+  container.querySelector('#garden-remove-saved').onclick = () => onRemoveGarden?.(savedSelect.value);
+  container.querySelector('[data-tool-open="gardens"]').hidden = gardens.length < 2;  container.querySelector('#garden-place-border').onclick = beginPlacement;
   container.querySelector('#garden-draw-image-area').onclick = () => startDrawing('image');
   container.querySelector('#garden-draw-perimeter').onclick = () => startDrawing('garden');
   container.querySelector('#garden-edit-image-area').onclick = () =>

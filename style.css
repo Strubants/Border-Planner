@@ -43,15 +43,11 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
 #main:has(.garden-page) { overflow: hidden; }
 .garden-page { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; padding: 8px; }
 .garden-address-bar { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr); align-items: end; gap: 12px; flex: none; }
-.garden-address-search label, .garden-saved-addresses label { margin: 0 0 3px; font-size: .75rem; font-weight: 700; }
 .garden-search { align-items: stretch; flex-wrap: nowrap; }
 .garden-search input { min-width: 0; flex: 1; }
 .garden-search button { flex: none; padding: 8px 13px; }
 .garden-address-side { min-width: 0; }
 .garden-address-side #garden-status { margin-top: 3px; font-size: .75rem; }
-.garden-saved-addresses { margin: 0; }
-.garden-saved-addresses .row { align-items: stretch; flex-wrap: nowrap; }
-#garden-address-select { flex: 1; min-width: 0; width: auto; padding: 7px; }
 .garden-address-side .btn { padding: 7px 10px; white-space: nowrap; }
 .garden-suggestion { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--line); background: #fff; color: inherit; }
 .garden-suggestion:first-child { border-radius: 10px 10px 0 0; }
@@ -205,10 +201,6 @@ dialog h2 { margin: 0 0 8px; font-size: 1.15rem; }
   .garden-page:has(.garden-workspace) .garden-search { gap: 6px; }
   .garden-page:has(.garden-workspace) .garden-search input { min-width: 0; font-size: .9rem; }
   .garden-page:has(.garden-workspace) .garden-search button { min-width: 64px; }
-  .garden-page:has(.garden-workspace) .garden-address-side:has(#garden-saved-addresses:not([hidden])) { display: block; margin-top: 5px; }
-  .garden-page:has(.garden-workspace) #garden-saved-addresses label { display: none; }
-  .garden-page:has(.garden-workspace) #garden-saved-addresses .row { flex-wrap: nowrap; }
-  .garden-page:has(.garden-workspace) #garden-remove-address { flex: none; }
   .garden-page:has(.garden-workspace) #garden-suggestions {
     position: absolute;
     z-index: 8;

@@ -239,6 +239,7 @@ function showList() {
 }
 
 // ---------- garden parcel lookup ----------
+let gardenActions = null;
 function showGarden() {
   gardenRequestCleanup?.();
   gardenRequestCleanup = null;
@@ -256,13 +257,6 @@ function showGarden() {
         </div>
       </div>
       <div class="garden-address-side">
-        <div id="garden-saved-addresses" class="garden-saved-addresses" hidden>
-          <label for="garden-address-select">Saved gardens</label>
-          <div class="row">
-            <select id="garden-address-select" aria-label="Select a saved garden"></select>
-            <button class="btn alt" id="garden-remove-address" type="button">Remove</button>
-          </div>
-        </div>
         <div id="garden-status" class="muted" role="status" aria-live="polite"></div>
       </div>
     </div>
@@ -274,53 +268,39 @@ function showGarden() {
   const status = $('garden-status');
   const suggestions = $('garden-suggestions');
   const result = $('garden-result');
-  const savedAddresses = $('garden-saved-addresses');
-  const addressSelect = $('garden-address-select');
   let suggestionTimer;
   let suggestionSequence = 0;
   let suggestionController;
   let lookupSequence = 0;
   let lookupController;
 
-  function renderSavedAddresses() {
-    addressSelect.replaceChildren();
-    for (const savedGarden of data.gardens) {
-      const option = document.createElement('option');
-      option.value = savedGarden.id;
-      option.textContent = savedGarden.address;
-      option.selected = savedGarden.id === data.activeGardenId;
-      addressSelect.append(option);
-    }
-    savedAddresses.hidden = data.gardens.length < 2;
-  }
-
-  addressSelect.onchange = () => {
-    const garden = data.gardens.find(item => item.id === addressSelect.value);
-    if (!garden) return;
-    data.garden = garden;
-    data.activeGardenId = garden.id;
-    input.value = garden.address;
-    clearSuggestions();
-    status.textContent = 'Showing the saved parcel.';
-    renderSavedAddresses();
-    save();
-    renderGardenResult(result, garden);
+  gardenActions = {
+    select(id) {
+      const garden = data.gardens.find(item => item.id === id);
+      if (!garden) return;
+      data.garden = garden;
+      data.activeGardenId = garden.id;
+      input.value = garden.address;
+      clearSuggestions();
+      status.textContent = 'Showing the saved parcel.';
+      save();
+      renderGardenResult(result, garden);
+    },
+    async remove(id) {
+      const garden = data.gardens.find(item => item.id === id);
+      if (!garden || !await ask(`Remove ${garden.address} and its garden layout?`, 'Remove address')) return;
+      data.gardens = data.gardens.filter(item => item.id !== garden.id);
+      if (data.activeGardenId === garden.id) {
+        data.garden = data.gardens[0] || null;
+        data.activeGardenId = data.garden?.id || null;
+      }
+      input.value = data.garden?.address || '';
+      status.textContent = data.garden ? 'Showing the saved parcel.' : 'Search for an address, then select an individual house-number result.';
+      save();
+      if (data.garden) renderGardenResult(result, data.garden);
+      else result.replaceChildren();
+    },
   };
-
-  $('garden-remove-address').onclick = async () => {
-    const garden = data.gardens.find(item => item.id === data.activeGardenId);
-    if (!garden || !await ask(`Remove ${garden.address} and its garden layout?`, 'Remove address')) return;
-    data.gardens = data.gardens.filter(item => item.id !== garden.id);
-    data.garden = data.gardens[0] || null;
-    data.activeGardenId = data.garden?.id || null;
-    input.value = data.garden?.address || '';
-    status.textContent = data.garden ? 'Showing the saved parcel.' : 'Search for an address, then select an individual house-number result.';
-    renderSavedAddresses();
-    save();
-    if (data.garden) renderGardenResult(result, data.garden);
-    else result.replaceChildren();
-  };
-
   const apiJson = async (url, controller) => {
     const response = await fetch(url, {
       headers: { Accept: 'application/json' },
@@ -476,9 +456,8 @@ function showGarden() {
       data.activeGardenId = garden.id;
       save();
       status.textContent = data.gardens.length > 1
-        ? 'Parcel saved. Choose any saved garden to switch locations.'
+        ? 'Parcel saved. Switch gardens from the toolbox.'
         : 'Parcel found. Check the outline against your actual garden boundary.';
-      renderSavedAddresses();
       renderGardenResult(result, garden);
     } catch (error) {
       if (error.name !== 'AbortError' && sequence === lookupSequence) {
@@ -511,7 +490,6 @@ function showGarden() {
     lookupSequence++;
   };
 
-  renderSavedAddresses();
   if (data.garden) {
     input.value = data.garden.address;
     status.textContent = 'Showing the saved parcel. Search for another address to add a garden.';
@@ -548,6 +526,10 @@ function renderGardenResult(container, garden) {
     borders: data.borders,
     plants: data.plants,
     onChange: save,
+    gardens: data.gardens,
+    activeGardenId: garden.id,
+    onSelectGarden: id => gardenActions?.select(id),
+    onRemoveGarden: id => gardenActions?.remove(id),
   });
 }
 
