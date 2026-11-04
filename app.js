@@ -617,7 +617,7 @@ function openEditor(borderId) {
     actions: [{ label: '⋮', onClick: () => borderMenu(border) }],
   });
   main.innerHTML = `
-    <div id="stage"><svg id="sat"></svg><svg id="svg"></svg><div id="hint"></div><div id="type-filter" class="type-filter" aria-label="Show plant types"></div>
+    <div id="stage"><svg id="sat"></svg><svg id="svg"></svg><div id="stage-top"><div id="hint"></div><div id="type-filter" class="type-filter" aria-label="Show plant types"></div></div>
       <button type="button" id="label-toggle" aria-pressed="true">${ICONS.tag}<span>Labels</span></button>
       <button type="button" id="sat-toggle" aria-pressed="false">${ICONS.layers}<span>Satellite</span></button><div id="sat-note"></div></div>
     <div class="toolbar" id="tools"></div>`;
@@ -1480,7 +1480,7 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
       const name = d.querySelector('#pl-name').value.trim();
       if (!name) { notify('Please enter a name.'); return; }
       const type = d.querySelector('#pl-type').value;
-      if (!type) { notify('Please choose a type: Tuber, Plant or Bush / tree.'); return; }
+      if (!type) { notify('Please choose a type: Tuber, Plant or Bush / Tree.'); return; }
       Object.assign(p, {
         name,
         type,

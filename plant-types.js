@@ -1,4 +1,4 @@
-export const PLANT_TYPES = [['tuber', 'Tuber'], ['plant', 'Plant'], ['tree', 'Bush / tree']];
+export const PLANT_TYPES = [['tuber', 'Tuber'], ['plant', 'Plant'], ['tree', 'Bush / Tree']];
 
 const KEY = 'plantTypeFilter';
 
