@@ -732,7 +732,11 @@ function openEditor(borderId) {
     }
   }
 
-  mountTypeFilter(typeFilterEl, st.typeFilter, () => render());
+  mountTypeFilter(typeFilterEl, st.typeFilter, () => {
+    const z = selZone();
+    if (z && !zoneShown(z)) { st.sel = { kind: 'border' }; st.selVertex = -1; }
+    update();
+  });
 
   const syncLabelToggle = () => {
     labelToggle.classList.toggle('on', st.showLabels);
@@ -779,7 +783,7 @@ function openEditor(borderId) {
     }
     for (const z of border.zones) {
       if (!zoneShown(z)) continue;
-      const entries = st.mode === 'view' ? zoneEntries(z, data.plants, st.typeFilter) : z.plants;
+      const entries = zoneEntries(z, data.plants, st.typeFilter);
       const col = entries.map(rp).find(p => p.color)?.color ?? '#9aa39a';
       const zsel = st.mode === 'edit' && st.sel.kind === 'zone' && st.sel.id === z.id;
       s += `<polygon points="${poly(z.points)}" fill="${col}" fill-opacity=".55" stroke="${zsel ? '#d6730a' : col}" stroke-width="${px(zsel ? 3 : 2)}" stroke-linejoin="round"/>`;
@@ -1224,7 +1228,7 @@ function openEditor(borderId) {
     render();
   }, { passive: false });
 
-  const zoneShown = z => st.mode !== 'view' || zoneVisible(z, data.plants, st.typeFilter);
+  const zoneShown = z => zoneVisible(z, data.plants, st.typeFilter);
 
   function topZoneAt(pt) {
     for (let i = border.zones.length - 1; i >= 0; i--) if (zoneShown(border.zones[i]) && pointInPolygon(pt, border.zones[i].points)) return border.zones[i];
