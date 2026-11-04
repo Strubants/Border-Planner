@@ -580,13 +580,15 @@ const ICONS = Object.fromEntries(Object.entries({
   unlock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 017.5-2"/>',
   pointMinus: '<circle cx="9" cy="12" r="4"/><path d="M16 12h6"/>',
   ruler: '<rect x="2" y="8" width="20" height="8" rx="1"/><path d="M6 8v4M10 8v3M14 8v4M18 8v3"/>',
-  magnet: '<path d="M6 3v8a6 6 0 0012 0V3h-4v8a2 2 0 01-4 0V3z"/><path d="M6 7h4M14 7h4"/>',
   details: '<path d="M4 6h16M4 12h16M4 18h10"/>',
   rect: '<rect x="4" y="6" width="16" height="12" rx="1"/>',
   oval: '<ellipse cx="12" cy="12" rx="9" ry="6"/>',
   triangle: '<path d="M12 4l9 16H3z"/>',
   rotL: '<path d="M4 12a8 8 0 108-8H8"/><path d="M11 1L8 4l3 3"/>',
   rotR: '<path d="M20 12a8 8 0 11-8-8h4"/><path d="M13 1l3 3-3 3"/>',
+  tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/>',
+  paste: '<path d="M9 4h6v3H9z"/><path d="M9 5.5H7a2 2 0 00-2 2V19a2 2 0 002 2h10a2 2 0 002-2V7.5a2 2 0 00-2-2h-2"/>',
   layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
   toolbox: '<rect x="3" y="8" width="18" height="12" rx="2"/><path d="M9 8V6a1 1 0 011-1h4a1 1 0 011 1v2M3 13h18M11 13v2h2v-2"/>',
 }).map(([k, v]) => [k, `<svg viewBox="0 0 24 24" aria-hidden="true">${v}</svg>`]));
@@ -603,6 +605,8 @@ function shapePoints(kind, c, w, h) {
   return Array.from({ length: 12 }, (_, i) => ({ x: c.x + hw * Math.cos(i / 12 * 2 * Math.PI), y: c.y + hh * Math.sin(i / 12 * 2 * Math.PI) }));
 }
 
+let zoneClipboard = null;
+
 function openEditor(borderId) {
   const border = data.borders.find(b => b.id === borderId);
   if (!border) return showList();
@@ -613,40 +617,23 @@ function openEditor(borderId) {
   });
   main.innerHTML = `
     <div id="stage"><svg id="sat"></svg><svg id="svg"></svg><div id="hint"></div>
+      <button type="button" id="label-toggle" aria-pressed="true">${ICONS.tag}<span>Labels</span></button>
       <button type="button" id="sat-toggle" aria-pressed="false">${ICONS.layers}<span>Satellite</span></button><div id="sat-note"></div></div>
     <div class="toolbar" id="tools"></div>`;
-  const svg = $('svg'), hint = $('hint'), tools = $('tools'), satSvg = $('sat'), satToggle = $('sat-toggle'), stage = $('stage');
+  const svg = $('svg'), hint = $('hint'), tools = $('tools'), satSvg = $('sat'), satToggle = $('sat-toggle'), labelToggle = $('label-toggle'), stage = $('stage');
 
   const st = {
     mode: border.points.length ? 'view' : 'drawBorder', // view | edit | drawBorder | drawZone
     draft: [],
     shape: null,
     shapesOpen: false,
+    pendingShape: null,
+    pendingPaste: false,
+    showLabels: localStorage.getItem('showZoneLabels') !== '0',
     sel: { kind: 'border' },
     selVertex: -1,
     vb: { x: 0, y: 0, w: 500 },
-    snap: localStorage.getItem('snapToBorder') !== '0',
   };
-
-  // Keeps zone points inside the border and outside other zones (and magnetises to nearby corners).
-  const constrain = (p, excludeId) => {
-    if (!st.snap) return p;
-    const others = border.zones.filter(z => z.id !== excludeId);
-    const magnet = [...border.points, ...others.flatMap(z => z.points)].find(q => dpx(q, p) < 12);
-    if (magnet) return { x: magnet.x, y: magnet.y };
-    let q = p;
-    for (let n = 0; n < 4; n++) {
-      if (border.points.length >= 3 && !insideOrOn(q, border.points)) q = closestOnPolygon(q, border.points);
-      const z = others.find(o => pointInPolygon(q, o.points) && distToPolygon(q, o.points) > 0.5);
-      if (!z) break;
-      q = closestOnPolygon(q, z.points);
-    }
-    return q;
-  };
-
-  const zoneFits = (pts, excludeId) => !st.snap || (
-    pts.every(p => border.points.length < 3 || insideOrOn(p, border.points)) &&
-    !border.zones.some(z => z.id !== excludeId && polygonsOverlap(pts, z.points)));
 
   const selZone = () => st.sel.kind === 'zone' ? border.zones.find(z => z.id === st.sel.id) : null;
 
@@ -739,10 +726,20 @@ function openEditor(borderId) {
     g.setAttribute('transform', `scale(100) rotate(${-geo.rot}) translate(${-geo.x} ${geo.y})`);
     if (tiles.key !== satKey) {
       satKey = tiles.key;
-      const parcel = (gardenOf()?.parcel?.polygons || []).flatMap(rings => rings.map(ring => `<path d="M${ring.map(q => `${q[0]} ${-q[1]}`).join('L')}Z" fill="none" stroke="#ffd54a" stroke-width="2" stroke-dasharray="7 5" vector-effect="non-scaling-stroke"/>`)).join('');
-      g.innerHTML = tiles.markup + parcel;
+      g.innerHTML = tiles.markup;
     }
   }
+
+  const syncLabelToggle = () => {
+    labelToggle.classList.toggle('on', st.showLabels);
+    labelToggle.setAttribute('aria-pressed', String(st.showLabels));
+  };
+  syncLabelToggle();
+  labelToggle.onclick = () => {
+    st.showLabels = !st.showLabels;
+    localStorage.setItem('showZoneLabels', st.showLabels ? '1' : '0');
+    syncLabelToggle(); render();
+  };
 
   satToggle.onclick = () => {
     if (!border.sat) {
@@ -782,7 +779,7 @@ function openEditor(borderId) {
       s += `<polygon points="${poly(z.points)}" fill="${col}" fill-opacity=".55" stroke="${zsel ? '#d6730a' : col}" stroke-width="${px(zsel ? 3 : 2)}" stroke-linejoin="round"/>`;
       const c = centroid(z.points);
       const label = z.name || z.plants.map(e => rp(e).name + (e.count ? ` ×${e.count}` : '')).join(', ');
-      if (label) s += `<text x="${c.x}" y="${c.y}" font-size="${px(13)}" text-anchor="middle" dominant-baseline="middle" fill="#1d2a1f" stroke="#fff" stroke-width="${px(3)}" paint-order="stroke">${esc(label)}</text>`;
+      if (label && st.showLabels) s += `<text x="${c.x}" y="${c.y}" font-size="${px(13)}" text-anchor="middle" dominant-baseline="middle" fill="#1d2a1f" stroke="#fff" stroke-width="${px(3)}" paint-order="stroke">${esc(label)}</text>`;
     }
     // edge lengths of the border
     const bp = border.points;
@@ -851,8 +848,7 @@ function openEditor(borderId) {
     tools.innerHTML = '';
     const hasBorder = border.points.length >= 3;
     const drawing = st.mode === 'drawBorder' || st.mode === 'drawZone';
-    const goMode = m => () => { st.mode = m; st.draft = []; st.shape = null; st.selVertex = -1; st.shapesOpen = false; update(); };
-    const snapBtn = () => btn('magnet', st.snap ? 'Snap to border: on' : 'Snap to border: off', { on: st.snap, fn: toggleSnap });
+    const goMode = m => () => { st.mode = m; st.draft = []; st.shape = null; st.pendingShape = null; st.pendingPaste = false; st.selVertex = -1; st.shapesOpen = false; update(); };
 
     // each group: [label, buttons]
     const groups = [];
@@ -862,23 +858,23 @@ function openEditor(borderId) {
         ['Place shape', [btn('check', 'Place', { fn: confirmShape, kind: 'primary', text: true }), btn('x', 'Cancel', { fn: cancel })]],
         ['Size', [btn('ruler', 'Set distances', { fn: sizeDialog })]],
         ['Rotate', [btn('rotL', 'Rotate 15° left', { fn: () => rotateBy(-15) }), btn('rotR', 'Rotate 15° right', { fn: () => rotateBy(15) })]],
-        ...(st.shape.target === 'border' ? [] : [['Options', [snapBtn()]]]),
       );
     } else if (drawing) {
       const first = !st.draft.length;
       if (first) {
         const shapes = [btn('toolbox', 'Ready-made shapes', { on: st.shapesOpen, fn: () => { st.shapesOpen = !st.shapesOpen; renderTools(); } })];
         if (st.shapesOpen) shapes.push(
-          btn('rect', 'Rectangle', { fn: () => startShape('rect') }),
-          btn('oval', 'Oval', { fn: () => startShape('oval') }),
-          btn('triangle', 'Triangle', { fn: () => startShape('triangle') }),
+          btn('rect', 'Rectangle', { on: st.pendingShape === 'rect', fn: () => startShape('rect') }),
+          btn('oval', 'Oval', { on: st.pendingShape === 'oval', fn: () => startShape('oval') }),
+          btn('triangle', 'Triangle', { on: st.pendingShape === 'triangle', fn: () => startShape('triangle') }),
         );
+        if (st.mode === 'drawZone' && zoneClipboard) shapes.push(btn('paste', 'Paste copied zone', { on: st.pendingPaste, fn: startPaste }));
         groups.push(['Toolbox', shapes]);
       }
       groups.push([st.mode === 'drawZone' ? 'New zone' : 'Border outline', [
         btn('check', 'Finish', { fn: finishDraft, disabled: st.draft.length < 3, kind: 'primary', text: true }),
         btn('undo', 'Undo last point', { fn: () => { st.draft.pop(); update(); }, disabled: !st.draft.length }),
-        ...(st.mode === 'drawZone' ? [snapBtn(), btn('x', 'Cancel', { fn: goMode('view') })] : []),
+        ...(st.mode === 'drawZone' ? [btn('x', 'Cancel', { fn: goMode('view') })] : []),
       ]]);
     } else if (st.mode === 'edit') {
       const isZone = st.sel.kind === 'zone';
@@ -890,9 +886,10 @@ function openEditor(borderId) {
       }
       groups.push(['Point', pointBtns]);
       groups.push(['Shape', [btn('ruler', 'Edge lengths', { fn: lengthsDialog }), ...(isZone ? [
-        btn('rotL', 'Rotate 15° left', { fn: () => rotateBy(-15) }), btn('rotR', 'Rotate 15° right', { fn: () => rotateBy(15) }), snapBtn()] : [])]]);
+        btn('rotL', 'Rotate 15° left', { fn: () => rotateBy(-15) }), btn('rotR', 'Rotate 15° right', { fn: () => rotateBy(15) })] : [])]]);
       if (isZone) {
         groups.push(['Zone', [
+          btn('copy', 'Copy zone', { fn: () => { zoneClipboard = JSON.parse(JSON.stringify(selZone())); notify('Zone copied. Tap Add zone, then the paste button in the toolbox.'); renderTools(); } }),
           btn('details', 'Zone details and plants', { fn: () => zoneDialog(border, selZone(), update, false) }),
           btn('trash', 'Delete zone', {
             kind: 'danger',
@@ -937,23 +934,46 @@ function openEditor(borderId) {
       view: border.zones.length ? 'Tap a zone to see or edit its plants. Drag to pan, pinch to zoom.' : 'Tap “Add zone” to mark where you planted something.',
       edit: st.sel.kind === 'zone' ? 'Editing a zone: drag its body to move it, the square handles to resize, the round handle on top to rotate, orange points to reshape, a white dot to add a point. Tap empty space to edit the border.' : 'Editing the border. Green squares are locked points; drag orange points, or a white dot to add a point. Tap a point, then the lock button, to lock it. Tap a zone to edit it.',
       drawBorder: 'Tap the corners of the border one by one, then Finish (or tap the green first point to close). Or open the toolbox for a ready-made shape.',
-      drawZone: 'Tap the corners of the planted area and press Finish, or open the toolbox for a ready-made shape. With snap on, zones stay inside the border and cannot overlap other zones.',
+      drawZone: 'Tap the corners of the planted area and press Finish, or open the toolbox for a ready-made shape.',
       placeShape: 'Drag the shape to move it, the square handles to resize it and the round handle on top to rotate it. Use the ruler to type exact distances. Press Place when it is where you want it.',
     };
-    hint.textContent = hints[st.mode];
+    hint.textContent = st.pendingPaste ? 'Tap on the map where you want to paste the copied zone.' : st.pendingShape ? 'Tap on the map where you want to put the shape.' : hints[st.mode];
   }
 
+  function startPaste() {
+    st.pendingPaste = !st.pendingPaste;
+    st.pendingShape = null;
+    st.shapesOpen = false;
+    update();
+  }
+
+  function pasteZoneAt(c) {
+    st.pendingPaste = false;
+    const src = zoneClipboard, from = centroid(src.points), dx = c.x - from.x, dy = c.y - from.y;
+    const zone = { ...JSON.parse(JSON.stringify(src)), id: uid(), points: src.points.map(p => ({ x: p.x + dx, y: p.y + dy })) };
+    zone.plants = zone.plants.map(p => ({ ...p, id: uid() }));
+    border.zones.push(zone);
+    st.mode = 'view'; save(); update();
+  }
+
+  // Picking a shape only arms it; the shape is placed where the user taps next.
   function startShape(kind) {
+    st.pendingShape = kind;
+    st.pendingPaste = false;
+    st.shapesOpen = false;
+    update();
+  }
+
+  function placeShapeAt(kind, c) {
+    st.pendingShape = null;
     const onBorder = border.points.length < 3;
-    let c, w, h;
+    let w, h;
     if (onBorder) {
       const vh = st.vb.w * rect().height / rect().width;
-      c = { x: st.vb.x + st.vb.w / 2, y: st.vb.y + vh / 2 };
       w = Math.round(st.vb.w * 0.4 / 10) * 10; h = Math.round(Math.min(st.vb.w * 0.3, vh * 0.5) / 10) * 10;
     } else {
       const b = bbox(border.points);
-      c = centroid(border.points);
-      w = Math.min(Math.max((b.maxX - b.minX) * 0.3, 40), b.maxX - b.minX);
+      w =  Math.min(Math.max((b.maxX - b.minX) * 0.3, 40), b.maxX - b.minX);
       h = Math.min(Math.max((b.maxY - b.minY) * 0.3, 40), b.maxY - b.minY);
     }
     st.shape = { kind, target: onBorder ? 'border' : 'zone', points: shapePoints(kind, c, w, h) };
@@ -969,7 +989,6 @@ function openEditor(borderId) {
       save(); fit(); update();
       return;
     }
-    if (!zoneFits(st.shape.points, null)) { notify('This shape overlaps another zone or leaves the border. Move or resize it, or turn Snap off.'); return; }
     addZone(st.shape.points, st.shape.rot);
   }
 
@@ -999,7 +1018,6 @@ function openEditor(borderId) {
     const h = st.mode === 'placeShape' ? st.shape : selZone();
     if (!h) return;
     const pts = rotatePoints(h.points, deg, centroid(h.points));
-    if (h !== st.shape && !zoneFits(pts, h.id)) { notify('Rotating would make the zone overlap another zone or leave the border (turn Snap off to allow it).'); return; }
     h.points = pts;
     h.rot = (((h.rot || 0) + deg) % 360 + 360) % 360;
     if (h !== st.shape) save();
@@ -1014,12 +1032,6 @@ function openEditor(borderId) {
     zoneDialog(border, zone, update, true);
   }
 
-  function toggleSnap() {
-    st.snap = !st.snap;
-    localStorage.setItem('snapToBorder', st.snap ? '1' : '0');
-    update();
-  }
-
   function update() { keepPlacement(); renderTools(); render(); }
 
   function finishDraft() {
@@ -1030,7 +1042,6 @@ function openEditor(borderId) {
       st.draft = [];
       save(); fit(); update();
     } else {
-      if (!zoneFits(st.draft, null)) { notify('This zone overlaps another zone or leaves the border. Adjust the points, or turn Snap off.'); return; }
       addZone(st.draft);
     }
   }
@@ -1144,7 +1155,6 @@ function openEditor(borderId) {
     if (!g.moved && Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > 6) g.moved = true;
     if (g.type === 'vertex') {
       let p = world(e);
-      if (st.sel.kind === 'zone') p = constrain(p, st.sel.id);
       selPts()[g.i] = { x: p.x, y: p.y };
       render();
     } else if (g.type === 'move' && g.moved) {
@@ -1190,11 +1200,7 @@ function openEditor(borderId) {
     if (!done) return;
     if (done.type === 'vertex' || done.type === 'scale' || (done.type === 'move' && done.moved) || (done.type === 'rotate' && done.moved)) {
       const zone = st.mode === 'edit' ? selZone() : null;
-      if (zone && !zoneFits(zone.points, zone.id)) {
-        zone.points = done.backup;
-        if (done.type === 'rotate') zone.rot = done.rot0;
-        notify('A zone cannot overlap another zone or leave the border (turn Snap off to allow it).');
-      } else if (zone && done.type === 'vertex') delete zone.rot;
+      if (zone && done.type === 'vertex') delete zone.rot;
       save(); update(); return;
     }
     if (!done.moved && !done.keep && e.type === 'pointerup') onTap(done.pt);
@@ -1219,14 +1225,11 @@ function openEditor(borderId) {
 
   function onTap(pt) {
     if (st.mode === 'placeShape') return;
+    if (st.pendingPaste && st.mode === 'drawZone') return pasteZoneAt(pt);
+    if (st.pendingShape && (st.mode === 'drawBorder' || st.mode === 'drawZone')) return placeShapeAt(st.pendingShape, pt);
     if (st.mode === 'drawBorder' || st.mode === 'drawZone') {
       if (st.draft.length >= 3 && dpx(st.draft[0], pt) < 16) return finishDraft();
-      let p = pt;
-      if (st.mode === 'drawZone') {
-        const near = [...border.points, ...border.zones.flatMap(z => z.points)].find(q => dpx(q, pt) < 14);
-        p = near ? { x: near.x, y: near.y } : constrain(pt, null);
-      }
-      st.draft.push({ x: p.x, y: p.y });
+      st.draft.push({ x: pt.x, y: pt.y });
       return update();
     }
     const z = topZoneAt(pt);

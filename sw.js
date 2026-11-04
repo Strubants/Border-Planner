@@ -1,4 +1,4 @@
-const CACHE = 'border-planner-v40';
+const CACHE = 'border-planner-v41';
 const FILES = ['./', 'index.html', 'app.js', 'cloud-sync.js', 'garden-map.js', 'geometry.js', 'store.js', 'view3d.js', 'style.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
