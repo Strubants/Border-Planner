@@ -1,4 +1,5 @@
 import { uid } from './store.js';
+import { loadTypeFilter, zoneEntries, zoneVisible, mountTypeFilter } from './plant-types.js';
 
 const ORTHO_URL = 'https://geo.api.vlaanderen.be/OFW/wmts';
 const WFS_URL = 'https://geo.api.vlaanderen.be/GRB/wfs';
@@ -143,6 +144,7 @@ export function orthoTiles(view, desiredResolution) {
 }
 
 export function mountGardenMap(container, garden, { borders, plants, onChange }) {
+  const typeFilter = loadTypeFilter();
   const planning = gardenPlanning(garden);
   const bounds = parcelBounds(garden);
   const maskId = `garden-mask-${uid()}`;
@@ -195,6 +197,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
               <a class="garden-attribution" href="https://metadata.vlaanderen.be/srv/api/records/50134be3-f0cd-47c5-8f6e-4a0936287947" target="_blank" rel="noreferrer">© Digitaal Vlaanderen</a>
             </div>
             <div class="garden-toggle-stack">
+              <div class="type-filter inline" id="garden-type-filter" aria-label="Show plant types"></div>
               <button class="garden-view-toggle" type="button" id="garden-label-toggle" aria-pressed="true">${GI.tag}<span>Labels</span></button>
               <button class="garden-view-toggle" type="button" id="garden-view-toggle" aria-pressed="true">${GI.layers}<span>Satellite</span></button>
             </div>
@@ -257,6 +260,7 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
   const workspace = container.querySelector('.garden-workspace');
   const toolsToggle = container.querySelector('#garden-toggle-tools');
   const viewToggle = container.querySelector('#garden-view-toggle');
+  mountTypeFilter(container.querySelector('#garden-type-filter'), typeFilter, () => draw());
   const view = { x: 0, y: 0, w: 1, h: 1 };
   let initialFrame;
   const state = {
@@ -418,9 +422,9 @@ export function mountGardenMap(container, garden, { borders, plants, onChange })
       const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
       const centerY = (Math.min(...ys) + Math.max(...ys)) / 2;
       const selected = placement.id === state.selectedPlacement;
-      const zones = border.zones.map(zone => {
+      const zones = border.zones.filter(zone => zoneVisible(zone, plants, typeFilter)).map(zone => {
         const path = `${zone.points.map((point, index) => `${index ? 'L' : 'M'}${point.x},${point.y}`).join('')}Z`;
-        const color = zone.plants.map(entry => dataPlantColor(entry)).find(Boolean) || '#c3d6af';
+        const color = zoneEntries(zone, plants, typeFilter).map(entry => dataPlantColor(entry)).find(Boolean) || '#c3d6af';
         return `<path d="${path}" fill="${esc(color)}" fill-opacity=".68" stroke="#42543c" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`;
       }).join('');
       const outline = `${border.points.map((point, index) => `${index ? 'L' : 'M'}${point.x},${point.y}`).join('')}Z`;

@@ -1,5 +1,6 @@
 import { dist, polygonArea, centroid, pointInPolygon, bbox, setEdgeLength, closestOnPolygon, distToPolygon, polygonsOverlap, insideOrOn } from './geometry.js';
 import { loadData, saveData, uid } from './store.js';
+import { PLANT_TYPES, loadTypeFilter, zoneEntries, zoneVisible, mountTypeFilter } from './plant-types.js';
 import { mountGardenMap, orthoTiles } from './garden-map.js';
 import * as cloud from './cloud-sync.js';
 import { open3D } from './view3d.js';
@@ -616,11 +617,11 @@ function openEditor(borderId) {
     actions: [{ label: '⋮', onClick: () => borderMenu(border) }],
   });
   main.innerHTML = `
-    <div id="stage"><svg id="sat"></svg><svg id="svg"></svg><div id="hint"></div>
+    <div id="stage"><svg id="sat"></svg><svg id="svg"></svg><div id="hint"></div><div id="type-filter" class="type-filter" aria-label="Show plant types"></div>
       <button type="button" id="label-toggle" aria-pressed="true">${ICONS.tag}<span>Labels</span></button>
       <button type="button" id="sat-toggle" aria-pressed="false">${ICONS.layers}<span>Satellite</span></button><div id="sat-note"></div></div>
     <div class="toolbar" id="tools"></div>`;
-  const svg = $('svg'), hint = $('hint'), tools = $('tools'), satSvg = $('sat'), satToggle = $('sat-toggle'), labelToggle = $('label-toggle'), stage = $('stage');
+  const svg = $('svg'), hint = $('hint'), tools = $('tools'), satSvg = $('sat'), satToggle = $('sat-toggle'), labelToggle = $('label-toggle'), typeFilterEl = $('type-filter'), stage = $('stage');
 
   const st = {
     mode: border.points.length ? 'view' : 'drawBorder', // view | edit | drawBorder | drawZone
@@ -629,6 +630,7 @@ function openEditor(borderId) {
     shapesOpen: false,
     pendingShape: null,
     pendingPaste: false,
+    typeFilter: loadTypeFilter(),
     showLabels: localStorage.getItem('showZoneLabels') !== '0',
     sel: { kind: 'border' },
     selVertex: -1,
@@ -730,6 +732,8 @@ function openEditor(borderId) {
     }
   }
 
+  mountTypeFilter(typeFilterEl, st.typeFilter, () => render());
+
   const syncLabelToggle = () => {
     labelToggle.classList.toggle('on', st.showLabels);
     labelToggle.setAttribute('aria-pressed', String(st.showLabels));
@@ -774,11 +778,13 @@ function openEditor(borderId) {
       s += `<polygon points="${poly(border.points)}" fill="#e3edd2" fill-opacity="${satOn ? .2 : 1}" stroke="${bsel ? '#d6730a' : satOn ? '#fff' : '#5b7a43'}" stroke-width="${px(bsel ? 3 : 2.5)}" stroke-linejoin="round"/>`;
     }
     for (const z of border.zones) {
-      const col = z.plants.map(rp).find(p => p.color)?.color ?? '#9aa39a';
+      if (!zoneShown(z)) continue;
+      const entries = st.mode === 'view' ? zoneEntries(z, data.plants, st.typeFilter) : z.plants;
+      const col = entries.map(rp).find(p => p.color)?.color ?? '#9aa39a';
       const zsel = st.mode === 'edit' && st.sel.kind === 'zone' && st.sel.id === z.id;
       s += `<polygon points="${poly(z.points)}" fill="${col}" fill-opacity=".55" stroke="${zsel ? '#d6730a' : col}" stroke-width="${px(zsel ? 3 : 2)}" stroke-linejoin="round"/>`;
       const c = centroid(z.points);
-      const label = z.name || z.plants.map(e => rp(e).name + (e.count ? ` ×${e.count}` : '')).join(', ');
+      const label = z.name || entries.map(e => rp(e).name + (e.count ? ` ×${e.count}` : '')).join(', ');
       if (label && st.showLabels) s += `<text x="${c.x}" y="${c.y}" font-size="${px(13)}" text-anchor="middle" dominant-baseline="middle" fill="#1d2a1f" stroke="#fff" stroke-width="${px(3)}" paint-order="stroke">${esc(label)}</text>`;
     }
     // edge lengths of the border
@@ -1218,8 +1224,10 @@ function openEditor(borderId) {
     render();
   }, { passive: false });
 
+  const zoneShown = z => st.mode !== 'view' || zoneVisible(z, data.plants, st.typeFilter);
+
   function topZoneAt(pt) {
-    for (let i = border.zones.length - 1; i >= 0; i--) if (pointInPolygon(pt, border.zones[i].points)) return border.zones[i];
+    for (let i = border.zones.length - 1; i >= 0; i--) if (zoneShown(border.zones[i]) && pointInPolygon(pt, border.zones[i].points)) return border.zones[i];
     return null;
   }
 
@@ -1401,6 +1409,7 @@ const monthOptions = sel => '<option value="0">—</option>' + MONTHS.map((m, i)
 
 function plantSummary(p) {
   return [
+    PLANT_TYPES.find(([k]) => k === p.type)?.[1] ?? 'type not set',
     p.bloomFrom && p.bloomTo ? `blooms ${MONTHS[p.bloomFrom - 1]}–${MONTHS[p.bloomTo - 1]}` : '',
     p.water && 'water: ' + label(WATER, p.water),
     p.sun && label(SUN, p.sun),
@@ -1410,13 +1419,14 @@ function plantSummary(p) {
 
 // Create (plant = null) or edit a library plant. Calls onDone(plant) after saving; closes itself first.
 function plantDialog(plant, onDone, onCancel, canDelete = false) {
-  const p = plant ?? { id: uid(), name: '', color: '#e8a2c1', bloomFrom: 0, bloomTo: 0, water: '', sun: '', notes: '' };
+  const p = plant ?? { id: uid(), name: '', color: '#e8a2c1', bloomFrom: 0, bloomTo: 0, water: '', sun: '', notes: '', type: '' };
   openDialog(`<h2>${plant ? 'Edit plant' : 'New plant'}</h2>
     ${plant ? '<p class="muted">Changes apply to every zone that uses this plant.</p>' : ''}
     <label>Name</label>
     <div class="row"><input type="text" id="pl-name" class="grow" value="${esc(p.name)}" placeholder="e.g. Tulip ‘Queen of Night’">
     <button class="btn alt" type="button" id="pl-autofill">Autofill</button></div>
     <p class="muted" id="pl-autofill-msg" hidden></p>
+    <label>Type (required)</label><select id="pl-type"><option value="">Choose a type…</option>${PLANT_TYPES.map(([k, l]) => `<option value="${k}"${p.type === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
     <div class="row"><div class="grow"><label>Blooms from</label><select id="pl-from">${monthOptions(p.bloomFrom)}</select></div>
     <div class="grow"><label>until</label><select id="pl-to">${monthOptions(p.bloomTo)}</select></div>
     <div><label>Colour</label><input type="color" id="pl-color" value="${esc(p.color)}"></div></div>
@@ -1469,8 +1479,11 @@ function plantDialog(plant, onDone, onCancel, canDelete = false) {
     d.querySelector('#pl-save').onclick = () => {
       const name = d.querySelector('#pl-name').value.trim();
       if (!name) { notify('Please enter a name.'); return; }
+      const type = d.querySelector('#pl-type').value;
+      if (!type) { notify('Please choose a type: Tuber, Plant or Bush / tree.'); return; }
       Object.assign(p, {
         name,
+        type,
         color: d.querySelector('#pl-color').value,
         bloomFrom: +d.querySelector('#pl-from').value,
         bloomTo: +d.querySelector('#pl-to').value,
